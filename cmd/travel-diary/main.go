@@ -44,7 +44,7 @@ func main() {
 	app := server.NewApp(cfg, s, importer, genie)
 
 	// Start worker pool
-	pool := services.NewPool(s, cfg.OMLXConcurrency)
+	pool := services.NewPool(s, genie, cfg.OMLXConcurrency)
 	pool.Start(ctx)
 	defer pool.Stop()
 

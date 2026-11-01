@@ -14,17 +14,17 @@ import (
 type WorkerPool struct {
 	store    *store.Store
 	workerID string
-	queue    chan *domain.Job
+	genie    *Genie
 	mu       sync.Mutex
 	running  bool
 }
 
 // NewPool creates a worker pool with the given concurrency.
-func NewPool(s *store.Store, concurrency int) *WorkerPool {
+func NewPool(s *store.Store, genie *Genie, concurrency int) *WorkerPool {
 	return &WorkerPool{
 		store:    s,
 		workerID: fmt.Sprintf("worker-%d", time.Now().UnixNano()),
-		queue:    make(chan *domain.Job, 100),
+		genie:    genie,
 	}
 }
 
@@ -79,8 +79,14 @@ func (p *WorkerPool) workerLoop(ctx context.Context) {
 
 // processJob executes a job and updates its state.
 func (p *WorkerPool) processJob(ctx context.Context, job *domain.Job) {
-	// For Milestone 1, only handle analyse_photo jobs
 	if job.Type == domain.JobTypeAnalysePhoto {
+		if err := p.genie.AnalyseTrip(ctx, job.TargetID); err != nil {
+			p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
+				j.State = domain.JobStateFailed
+				j.Error = err.Error()
+			})
+			return
+		}
 		p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
 			j.State = domain.JobStateSucceeded
 			j.Step = 1
