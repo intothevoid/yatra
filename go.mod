@@ -2,7 +2,11 @@ module github.com/karan/travel-diary
 
 go 1.26.4
 
-require modernc.org/sqlite v1.61.1
+require (
+	github.com/go-chi/chi/v5 v5.5.0
+	github.com/go-chi/cors v1.2.2
+	modernc.org/sqlite v1.61.1
+)
 
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
