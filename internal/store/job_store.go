@@ -17,8 +17,9 @@ type JobStore struct {
 func (s *JobStore) Create(ctx context.Context, job domain.Job) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO jobs (id, type, target_id, state, step, attempt_count, cancelled, idempotency_key, created_at, updated_at)
-		VALUES (?, ?, ?, 'queued', 0, 0, 0, ?, ?, ?)
+		INSERT INTO jobs (id, type, target_id, state, step, attempt_count, cancelled, idempotency_key,
+			progress, current_step, total_items, completed_items, created_at, updated_at)
+		VALUES (?, ?, ?, 'queued', 0, 0, 0, ?, 0, '', 0, 0, ?, ?)
 	`, job.ID, job.Type, job.TargetID, job.IdempotencyKey, now, now)
 	return err
 }
@@ -45,6 +46,7 @@ func (s *JobStore) Claim(ctx context.Context, workerID string) (*domain.Job, err
 	var job domain.Job
 	var leasedBy, leaseExpiryStr, createdAt, updatedAt string
 	var jobError sql.NullString
+	var currentStep sql.NullString
 	var cancelled int
 	leaseExpiry := time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339)
 	err = tx.QueryRowContext(ctx, `
@@ -54,10 +56,12 @@ func (s *JobStore) Claim(ctx context.Context, workerID string) (*domain.Job, err
 			WHERE state = 'queued' AND cancelled = 0
 			ORDER BY created_at ASC LIMIT 1
 		)
-		RETURNING id, type, target_id, state, step, attempt_count, leased_by, lease_expiry, error, cancelled, idempotency_key, created_at, updated_at
+		RETURNING id, type, target_id, state, step, attempt_count, leased_by, lease_expiry, error, cancelled, idempotency_key,
+			progress, current_step, total_items, completed_items, created_at, updated_at
 	`, workerID, leaseExpiry, expired).Scan(
 		&job.ID, &job.Type, &job.TargetID, &job.State, &job.Step, &job.AttemptCount,
 		&leasedBy, &leaseExpiryStr, &jobError, &cancelled, &job.IdempotencyKey,
+		&job.Progress, &currentStep, &job.TotalItems, &job.CompletedItems,
 		&createdAt, &updatedAt,
 	)
 	if err != nil {
@@ -75,6 +79,9 @@ func (s *JobStore) Claim(ctx context.Context, workerID string) (*domain.Job, err
 	if jobError.Valid {
 		job.Error = jobError.String
 	}
+	if currentStep.Valid {
+		job.CurrentStep = currentStep.String
+	}
 	job.Cancelled = cancelled == 1
 	job.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
 	job.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
@@ -91,24 +98,28 @@ func (s *JobStore) Update(ctx context.Context, jobID string, fn func(*domain.Job
 	fn(job)
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err = s.db.ExecContext(ctx, `
-		UPDATE jobs SET state = ?, step = ?, attempt_count = ?, error = ?, cancelled = ?, updated_at = ?
+		UPDATE jobs SET state = ?, step = ?, attempt_count = ?, error = ?, cancelled = ?,
+			progress = ?, current_step = ?, total_items = ?, completed_items = ?, updated_at = ?
 		WHERE id = ?
-	`, job.State, job.Step, job.AttemptCount, job.Error, job.Cancelled, now, jobID)
+	`, job.State, job.Step, job.AttemptCount, job.Error, job.Cancelled,
+		job.Progress, job.CurrentStep, job.TotalItems, job.CompletedItems, now, jobID)
 	return err
 }
 
 // Get retrieves a job by ID.
 func (s *JobStore) Get(ctx context.Context, id string) (*domain.Job, error) {
 	var job domain.Job
-	var leasedBy, leaseExpiry, idempKey, createdAt, updatedAt sql.NullString
+	var leasedBy, leaseExpiry, idempKey, createdAt, updatedAt, currentStep sql.NullString
 	var jobError sql.NullString
 	var cancelled int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT id, type, target_id, state, step, attempt_count, leased_by, lease_expiry,
-			error, cancelled, idempotency_key, created_at, updated_at
+			error, cancelled, idempotency_key, progress, current_step, total_items, completed_items,
+			created_at, updated_at
 		FROM jobs WHERE id = ?
 	`, id).Scan(&job.ID, &job.Type, &job.TargetID, &job.State, &job.Step, &job.AttemptCount,
-		&leasedBy, &leaseExpiry, &jobError, &cancelled, &idempKey, &createdAt, &updatedAt)
+		&leasedBy, &leaseExpiry, &jobError, &cancelled, &idempKey, &job.Progress, &currentStep,
+		&job.TotalItems, &job.CompletedItems, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +134,9 @@ func (s *JobStore) Get(ctx context.Context, id string) (*domain.Job, error) {
 	}
 	if idempKey.Valid {
 		job.IdempotencyKey = idempKey.String
+	}
+	if currentStep.Valid {
+		job.CurrentStep = currentStep.String
 	}
 	job.Cancelled = cancelled == 1
 	if createdAt.Valid {

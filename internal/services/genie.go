@@ -41,7 +41,14 @@ func (g *Genie) AnalyseTrip(ctx context.Context, tripID string) error {
 		return fmt.Errorf("get photos: %w", err)
 	}
 
-	for _, photo := range photos {
+	// Update job with total items
+	jobID := "job_" + tripID + "_analyse"
+	g.store.Jobs.Update(ctx, jobID, func(j *domain.Job) {
+		j.TotalItems = len(photos)
+		j.CurrentStep = "analysing photos"
+	})
+
+	for i, photo := range photos {
 		// Read preview image
 		previewPath := photo.PreviewPath
 		if previewPath == "" {
@@ -61,6 +68,10 @@ func (g *Genie) AnalyseTrip(ctx context.Context, tripID string) error {
 		if err != nil {
 			// Record error but continue with other photos
 			g.store.Photos.UpdateSelection(ctx, photo.ID, domain.PhotoStatusReview)
+			g.store.Jobs.Update(ctx, jobID, func(j *domain.Job) {
+				j.CompletedItems = i + 1
+				j.Progress = (i + 1) * 100 / len(photos)
+			})
 			continue
 		}
 
@@ -76,6 +87,12 @@ func (g *Genie) AnalyseTrip(ctx context.Context, tripID string) error {
 		} else {
 			g.store.Photos.UpdateSelection(ctx, photo.ID, domain.PhotoStatusReview)
 		}
+
+		// Update progress
+		g.store.Jobs.Update(ctx, jobID, func(j *domain.Job) {
+			j.CompletedItems = i + 1
+			j.Progress = (i + 1) * 100 / len(photos)
+		})
 	}
 
 	// Update trip status
