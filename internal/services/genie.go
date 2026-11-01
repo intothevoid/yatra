@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/karan/travel-diary/internal/adapters"
 	"github.com/karan/travel-diary/internal/config"
@@ -14,18 +13,37 @@ import (
 )
 
 // Genie runs the analysis pipeline: VLM analysis of photos,
-// experience extraction, and initial article generation.
+// experience extraction, photo matching, and article generation.
 type Genie struct {
 	cfg     *config.Config
 	store   *store.Store
 	vlm     adapters.VLMAdapter
 	text    adapters.TextAdapter
 	proc    adapters.ImageProcessor
+	extractor *EvidenceExtractor
+	matcher   *PhotoMatcher
+	drafter   *SectionDrafter
+	auditor   *GroundingAuditor
 }
 
 // NewGenie creates a new Genie service.
 func NewGenie(cfg *config.Config, s *store.Store, vlm adapters.VLMAdapter, text adapters.TextAdapter, proc adapters.ImageProcessor) *Genie {
-	return &Genie{cfg: cfg, store: s, vlm: vlm, text: text, proc: proc}
+	extractor := NewEvidenceExtractor(s, text)
+	matcher := NewPhotoMatcher(s)
+	auditor := NewGroundingAuditor(s)
+	drafter := NewSectionDrafter(s, text, nil)
+
+	return &Genie{
+		cfg:       cfg,
+		store:     s,
+		vlm:       vlm,
+		text:      text,
+		proc:      proc,
+		extractor: extractor,
+		matcher:   matcher,
+		drafter:   drafter,
+		auditor:   auditor,
+	}
 }
 
 // AnalyseTrip runs VLM analysis on all photos in a trip.
@@ -105,51 +123,29 @@ func (g *Genie) AnalyseTrip(ctx context.Context, tripID string) error {
 
 // GenerateArticle creates an initial article from the trip's notes and photos.
 func (g *Genie) GenerateArticle(ctx context.Context, tripID string) error {
-	// Read notes
-	trip, err := g.store.Trips.Get(ctx, tripID)
+	// Extract experiences from notes
+	if err := g.extractor.Extract(ctx, tripID); err != nil {
+		return fmt.Errorf("extract experiences: %w", err)
+	}
+
+	// Match photos to experiences
+	if err := g.matcher.Match(ctx, tripID); err != nil {
+		return fmt.Errorf("match photos: %w", err)
+	}
+
+	// Generate article
+	doc, err := g.drafter.Generate(ctx, tripID)
 	if err != nil {
-		return fmt.Errorf("get trip: %w", err)
+		return fmt.Errorf("generate article: %w", err)
 	}
 
-	notesPath := filepath.Join(trip.SourcePath, "story.txt")
-	notes, _ := os.ReadFile(notesPath)
-
-	// Generate narrative using text adapter
-	prompt := fmt.Sprintf("Write a first-person travel narrative based on these notes:\n%s\n\nKeep it grounded in the facts provided. Use a warm, observant tone.", string(notes))
-	narrative, err := g.text.Generate(ctx, prompt)
-	if err != nil {
-		return fmt.Errorf("generate narrative: %w", err)
-	}
-
-	// Create article document
-	doc := domain.ArticleDocument{
-		SchemaVersion: 1,
-		ArticleID:     "art_" + tripID,
-		Title:         trip.Name,
-		Slug:          domain.GenerateSlug(trip.Name),
-		Excerpt:       narrative[:min(200, len(narrative))],
-		Blocks: []domain.ArticleBlock{
-			{ID: "b1", Type: domain.BlockHeading, Text: trip.Name, Level: 2},
-			{ID: "b2", Type: domain.BlockParagraph, Text: narrative},
-		},
-	}
-
-	// Create article record
-	if err := g.store.Articles.Save(ctx, tripID, trip.Name); err != nil {
-		return fmt.Errorf("save article: %w", err)
-	}
-
-	// Save revision
-	docJSON, _ := json.Marshal(doc)
-	rev := domain.ArticleRevision{
-		ID:        "rev_1",
-		ArticleID: doc.ArticleID,
-		Author:    "system",
-		Reason:    "initial generation",
-		Document:  string(docJSON),
-	}
-	if err := g.store.Articles.SaveRevision(ctx, rev); err != nil {
-		return fmt.Errorf("save revision: %w", err)
+	// Audit for grounding issues
+	issues := g.auditor.Audit(ctx, tripID, doc)
+	if len(issues) > 0 {
+		// Log issues but don't fail - user can resolve them
+		for _, issue := range issues {
+			fmt.Println("WARNING: grounding issue:", issue.Detail)
+		}
 	}
 
 	// Update trip status
@@ -158,11 +154,4 @@ func (g *Genie) GenerateArticle(ctx context.Context, tripID string) error {
 	}
 
 	return nil
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

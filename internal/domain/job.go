@@ -44,6 +44,15 @@ const (
 	JobTypeCreatePreview = "create_preview"
 )
 
+// PhotoMatch links an experience to a photo.
+type PhotoMatch struct {
+	ExperienceID  string  `json:"experience_id"`
+	PhotoID       string  `json:"photo_id"`
+	Score         float64 `json:"score"`
+	Justification string  `json:"justification"`
+	UserOverride  bool    `json:"user_override"`
+}
+
 // IsExpired returns true if the lease has passed its expiry.
 func (j *Job) IsExpired() bool {
 	return j.State == JobStateRunning && time.Now().After(j.LeaseExpiry)
