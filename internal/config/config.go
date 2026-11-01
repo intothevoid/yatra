@@ -35,6 +35,11 @@ type Config struct {
 	// Ghost Admin API (for Milestone 5).
 	GhostURL    string
 	GhostAPIKey string // from env only
+
+	// Upload limits.
+	MaxFileSize   int64 // default 50MB
+	MaxUploadSize int64 // default 500MB
+	MaxUploadFiles int  // default 200
 }
 
 // LoadConfig reads configuration from environment variables.
@@ -56,6 +61,9 @@ func LoadConfig() *Config {
 		JPEGQuality:     envIntOr("JPEG_QUALITY", 85),
 		GhostURL:        envOr("GHOST_URL", ""),
 		GhostAPIKey:     os.Getenv("GHOST_ADMIN_API_KEY"),
+		MaxFileSize:     int64(envIntOr("MAX_FILE_SIZE_MB", 50)) << 20,
+		MaxUploadSize:   int64(envIntOr("MAX_UPLOAD_SIZE_MB", 500)) << 20,
+		MaxUploadFiles:  envIntOr("MAX_UPLOAD_FILES", 200),
 	}
 
 	// ImportRoots: comma-separated list from env, or default to ./imports
