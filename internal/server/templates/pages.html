@@ -1,0 +1,87 @@
+{{define "trips"}}
+<div class="import-form">
+    <form hx-post="/api/v1/page/import" hx-target="#app">
+        <input type="text" name="source_path" placeholder="/path/to/trip/folder" required>
+        <button type="submit">Import Trip</button>
+    </form>
+</div>
+<div class="trip-list">
+    {{range .Trips}}
+    <div class="trip-item">
+        <a href="/api/v1/page/trip/{{.ID}}" hx-get="/api/v1/page/trip/{{.ID}}" hx-target="#app">{{.Name}}</a>
+        <span class="badge">{{.Status}}</span>
+    </div>
+    {{else}}
+    <p>No trips yet. Import a trip folder to get started.</p>
+    {{end}}
+</div>
+{{end}}
+
+{{define "trip"}}
+<div class="trip-list">
+    <h2>{{.Trip.Name}}</h2>
+    <p>Status: <span class="badge">{{.Trip.Status}}</span></p>
+    
+    {{if eq .Trip.Status "IMPORTED"}}
+    <div class="toolbar">
+        <button hx-post="/api/v1/page/analyse/{{.Trip.ID}}" hx-target="#app">Analyse Photos</button>
+    </div>
+    {{else if eq .Trip.Status "PHOTO_REVIEW"}}
+    <div class="toolbar">
+        <button hx-post="/api/v1/page/rank/{{.Trip.ID}}" hx-target="#app">Rank Photos</button>
+        <button hx-post="/api/v1/page/generate/{{.Trip.ID}}" hx-target="#app">Generate Article</button>
+    </div>
+    {{else if eq .Trip.Status "EDITING"}}
+    <div class="toolbar">
+        <a href="/api/v1/page/article/art_{{.Trip.ID}}" hx-get="/api/v1/page/article/art_{{.Trip.ID}}" hx-target="#app">
+            <button class="primary">Edit Article</button>
+        </a>
+    </div>
+    {{end}}
+    
+    <h3>Photos ({{len .Photos}})</h3>
+    {{range .Photos}}
+    <div class="trip-item">
+        <span>{{.SourceFileID}}</span>
+        <span class="badge">{{.Status}}</span>
+    </div>
+    {{else}}
+    <p>No photos found.</p>
+    {{end}}
+</div>
+{{end}}
+
+{{define "editor"}}
+<div class="editor">
+    <h2>{{.Document.Title}}</h2>
+    <div class="toolbar">
+        <button class="primary" onclick="window.history.back()">Back</button>
+    </div>
+    
+    {{range .Document.Blocks}}
+    <div class="block">
+        <div class="block-header">
+            <span class="block-type">{{.Type}}</span>
+            <div class="block-actions">
+                <button title="Move up">↑</button>
+                <button title="Move down">↓</button>
+                <button title="Delete">×</button>
+            </div>
+        </div>
+        <div class="block-content" contenteditable="true" 
+             data-block-id="{{.ID}}" 
+             data-article-id="{{$.Document.ArticleID}}"
+             placeholder="Start typing...">
+            {{.Text}}
+        </div>
+        {{if .PhotoIDs}}
+        <div class="gallery">
+            {{range .PhotoIDs}}
+            <div class="gallery-item">{{.}}</div>
+            {{end}}
+        </div>
+        {{end}}
+    </div>
+    {{end}}
+</div>
+{{end}}

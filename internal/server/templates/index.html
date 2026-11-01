@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Travel Diary AI</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f5; }
+        .container { max-width: 900px; margin: 0 auto; padding: 20px; }
+        header { background: #fff; padding: 16px 20px; border-bottom: 1px solid #ddd; margin-bottom: 20px; }
+        header h1 { font-size: 1.5rem; }
+        .trip-list { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .trip-item { padding: 12px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+        .trip-item:last-child { border-bottom: none; }
+        .trip-item a { color: #0066cc; text-decoration: none; }
+        .trip-item a:hover { text-decoration: underline; }
+        .badge { background: #e0e0e0; padding: 2px 8px; border-radius: 12px; font-size: 0.75rem; }
+        .editor { background: #fff; border-radius: 8px; padding: 20px; }
+        .editor h2 { margin-bottom: 16px; }
+        .block { border: 1px solid #e0e0e0; border-radius: 4px; padding: 12px; margin-bottom: 8px; position: relative; }
+        .block:hover { border-color: #0066cc; }
+        .block-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .block-type { font-size: 0.75rem; color: #666; text-transform: uppercase; }
+        .block-actions { display: flex; gap: 4px; }
+        .block-actions button { background: none; border: none; cursor: pointer; color: #999; font-size: 1rem; }
+        .block-actions button:hover { color: #0066cc; }
+        .block-content { min-height: 40px; outline: none; }
+        .block-content:empty:before { content: attr(placeholder); color: #ccc; }
+        .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+        .gallery-item { aspect-ratio: 1; background: #f0f0f0; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 0.75rem; color: #999; }
+        .toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
+        .toolbar button { padding: 8px 16px; background: #fff; border: 1px solid #ddd; border-radius: 4px; cursor: pointer; }
+        .toolbar button:hover { background: #f5f5f5; }
+        .toolbar button.primary { background: #0066cc; color: #fff; border-color: #0066cc; }
+        .status { padding: 12px; background: #e8f5e9; border-radius: 4px; margin-bottom: 16px; }
+        .status.error { background: #ffebee; }
+        .import-form { background: #fff; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+        .import-form input { padding: 8px 12px; border: 1px solid #ddd; border-radius: 4px; width: 300px; }
+        .import-form button { padding: 8px 16px; background: #0066cc; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <h1>Travel Diary AI</h1>
+        </div>
+    </header>
+    <div class="container">
+        <div id="app" hx-get="/api/v1/page/trips" hx-trigger="load"></div>
+    </div>
+    <script>
+        // Block editor functionality
+        document.addEventListener('htmx:afterSwap', function(e) {
+            // Make blocks contenteditable
+            document.querySelectorAll('.block-content').forEach(el => {
+                el.addEventListener('blur', function() {
+                    const blockId = this.dataset.blockId;
+                    const text = this.innerText;
+                    fetch('/api/v1/articles/' + this.dataset.articleId + '/blocks/' + blockId, {
+                        method: 'PUT',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({text: text})
+                    });
+                });
+            });
+        });
+    </script>
+</body>
+</html>

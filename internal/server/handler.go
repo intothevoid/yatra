@@ -61,11 +61,13 @@ func (a *App) Router() http.Handler {
 	r.Get("/api/v1/jobs/{id}", a.getJob)
 	r.Post("/api/v1/jobs/{id}/cancel", a.cancelJob)
 
-	// Register upload and progress handlers
+	// Register upload, progress, and page handlers
 	uploadHandler := NewUploadHandler(a.cfg, a.store, a.importer)
 	uploadHandler.Register(r)
 	progressHandler := NewProgressHandler(a.store)
 	progressHandler.Register(r)
+	pageHandler := NewPageHandler(a.cfg, a.store, a.importer, a.genie)
+	pageHandler.Register(r)
 
 	return r
 }
