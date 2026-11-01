@@ -35,7 +35,7 @@ func setupApp(t *testing.T) (*App, *httptest.Server) {
 	importer := services.New(cfg, s, proc)
 	genie := services.NewGenie(cfg, s, vlm, text, proc)
 
-	app := NewApp(cfg, s, importer, genie)
+	app := NewApp(cfg, s, importer, genie, nil)
 	srv := httptest.NewServer(app.Router())
 	t.Cleanup(srv.Close)
 

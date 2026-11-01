@@ -36,12 +36,19 @@ func main() {
 	vlm := &adapters.FakeVLMAdapter{}
 	text := adapters.FakeTextAdapter{}
 
+	// Create Ghost client if configured
+	var ghostClient *services.GhostClient
+	if cfg.GhostURL != "" && cfg.GhostAPIKey != "" {
+		ghostClient = services.NewGhostClient(cfg.GhostURL, cfg.GhostAPIKey)
+	}
+
 	// Create services
 	importer := services.New(cfg, s, proc)
 	genie := services.NewGenie(cfg, s, vlm, text, proc)
+	exporter := services.NewGhostExporter(ghostClient, s)
 
 	// Create app
-	app := server.NewApp(cfg, s, importer, genie)
+	app := server.NewApp(cfg, s, importer, genie, exporter)
 
 	// Start worker pool
 	pool := services.NewPool(s, genie, cfg.OMLXConcurrency)

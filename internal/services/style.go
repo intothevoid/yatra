@@ -77,30 +77,6 @@ func (sp *StyleProfiler) analyzeStyle(posts []GhostPost) *domain.StyleProfile {
 	}
 }
 
-// GhostPost is a simplified Ghost post for style analysis.
-type GhostPost struct {
-	ID      string `json:"id"`
-	Title   string `json:"title"`
-	Slug    string `json:"slug"`
-	HTML    string `json:"html"`
-	Excerpt string `json:"custom_excerpt"`
-}
-
-// GhostClient provides access to the Ghost Admin API.
-type GhostClient struct {
-	BaseURL string
-	APIKey  string
-}
-
-// GetPosts fetches published posts from Ghost.
-func (g *GhostClient) GetPosts(ctx context.Context, limit int) ([]GhostPost, error) {
-	if g.BaseURL == "" || g.APIKey == "" {
-		return nil, fmt.Errorf("ghost client not configured")
-	}
-	// Implemented in Milestone 5
-	return []GhostPost{}, fmt.Errorf("ghost integration pending (Milestone 5)")
-}
-
 func stripHTML(html string) string {
 	var result strings.Builder
 	inTag := false

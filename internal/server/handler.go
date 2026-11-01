@@ -18,15 +18,16 @@ import (
 
 // App holds all dependencies for HTTP handlers.
 type App struct {
-	cfg      *config.Config
-	store    *store.Store
-	importer *services.Importer
-	genie    *services.Genie
+	cfg       *config.Config
+	store     *store.Store
+	importer  *services.Importer
+	genie     *services.Genie
+	exporter  *services.GhostExporter
 }
 
 // NewApp creates a new application.
-func NewApp(cfg *config.Config, s *store.Store, imp *services.Importer, gen *services.Genie) *App {
-	return &App{cfg: cfg, store: s, importer: imp, genie: gen}
+func NewApp(cfg *config.Config, s *store.Store, imp *services.Importer, gen *services.Genie, exp *services.GhostExporter) *App {
+	return &App{cfg: cfg, store: s, importer: imp, genie: gen, exporter: exp}
 }
 
 // Router returns the chi router with all routes registered.
@@ -60,6 +61,7 @@ func (a *App) Router() http.Handler {
 
 	r.Get("/api/v1/jobs/{id}", a.getJob)
 	r.Post("/api/v1/jobs/{id}/cancel", a.cancelJob)
+	r.Post("/api/v1/trips/{id}/ghost-draft", a.createGhostDraft)
 
 	// Register upload, progress, and page handlers
 	uploadHandler := NewUploadHandler(a.cfg, a.store, a.importer)
@@ -310,6 +312,23 @@ func (a *App) cancelJob(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.Jobs.Cancel(r.Context(), jobID); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, `{"ok":true}`)
+}
+
+// createGhostDraft creates or updates a Ghost draft.
+func (a *App) createGhostDraft(w http.ResponseWriter, r *http.Request) {
+	tripID := chi.URLParam(r, "id")
+	if a.exporter == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(apiErr("not_configured", "Ghost integration not configured"))
+		return
+	}
+	if err := a.exporter.CreateDraft(r.Context(), tripID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("export_failed", err.Error()))
 		return
 	}
 	w.WriteHeader(http.StatusOK)
