@@ -17,6 +17,20 @@ coverage.*
 !coverage.go
 *.coverprofile
 profile.cov
+*.test
+
+# Environment
+.env
+.env.local
+
+# Local assets used for testing
+testdata/fixtures/*.jpg
+testdata/fixtures/*.png
+testdata/fixtures/*.heic
+
+# Editor/IDE
+.idea/
+.vscode/
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
