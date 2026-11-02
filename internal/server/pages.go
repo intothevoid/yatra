@@ -137,29 +137,29 @@ func (h *PageHandler) importTrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trips, _ := h.store.Trips.List(r.Context())
 	w.Header().Set("Content-Type", "text/html")
 	h.tmpl.ExecuteTemplate(w, "trips", struct {
 		Trips []domain.Trip
-	}{})
+	}{Trips: trips})
 }
 
 func (h *PageHandler) analyseTrip(w http.ResponseWriter, r *http.Request) {
 	tripID := chi.URLParam(r, "tripId")
 
-	// Queue analysis job
-	job := domain.Job{
-		ID:           "job_" + tripID + "_analyse",
-		Type:         domain.JobTypeAnalysePhoto,
-		TargetID:     tripID,
-		IdempotencyKey: tripID,
+	// Run analysis (includes status transitions: ANALYSING -> PHOTO_REVIEW).
+	if err := h.genie.AnalyseTrip(r.Context(), tripID); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	h.store.Jobs.Create(r.Context(), job)
 
+	trip, _ := h.store.Trips.Get(r.Context(), tripID)
+	photos, _ := h.store.Photos.GetByTrip(r.Context(), tripID)
 	w.Header().Set("Content-Type", "text/html")
 	h.tmpl.ExecuteTemplate(w, "trip", struct {
 		Trip   *domain.Trip
 		Photos []domain.Photo
-	}{})
+	}{Trip: trip, Photos: photos})
 }
 
 func (h *PageHandler) rankPhotos(w http.ResponseWriter, r *http.Request) {
@@ -169,25 +169,47 @@ func (h *PageHandler) rankPhotos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update trip status through the proper state machine.
+	// If the trip was just imported (no analysis done), first transition
+	// IMPORTED -> PHOTO_REVIEW, then -> PHOTOS_APPROVED.
+	current, _ := h.store.Trips.Get(r.Context(), tripID)
+	if current.Status == domain.StatusImported {
+		// Go IMPORTED -> PHOTO_REVIEW -> PHOTOS_APPROVED
+		if err := h.store.Trips.UpdateStatus(r.Context(), tripID, domain.StatusPhotoReview); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := h.store.Trips.UpdateStatus(r.Context(), tripID, domain.StatusPhotosApproved); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	trip, _ := h.store.Trips.Get(r.Context(), tripID)
+	photos, _ := h.store.Photos.GetByTrip(r.Context(), tripID)
 	w.Header().Set("Content-Type", "text/html")
 	h.tmpl.ExecuteTemplate(w, "trip", struct {
 		Trip   *domain.Trip
 		Photos []domain.Photo
-	}{})
+	}{Trip: trip, Photos: photos})
 }
 
 func (h *PageHandler) generateArticle(w http.ResponseWriter, r *http.Request) {
 	tripID := chi.URLParam(r, "tripId")
+
+	// Generate article (includes status transitions: GENERATING -> EDITING).
 	if err := h.genie.GenerateArticle(r.Context(), tripID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
+	trip, _ := h.store.Trips.Get(r.Context(), tripID)
+	photos, _ := h.store.Photos.GetByTrip(r.Context(), tripID)
 	w.Header().Set("Content-Type", "text/html")
 	h.tmpl.ExecuteTemplate(w, "trip", struct {
 		Trip   *domain.Trip
 		Photos []domain.Photo
-	}{})
+	}{Trip: trip, Photos: photos})
 }
 
 func (h *PageHandler) updateBlock(w http.ResponseWriter, r *http.Request) {

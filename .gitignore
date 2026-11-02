@@ -1,6 +1,3 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
 # Binaries for programs and plugins
 *.exe
 *.exe~
@@ -17,11 +14,18 @@ coverage.*
 !coverage.go
 *.coverprofile
 profile.cov
-*.test
 
 # Environment
 .env
 .env.local
+.env.*.local
+
+# Runtime directories
+!data/.gitkeep
+!trips/.gitkeep
+data/
+trips/
+imports/**/*
 
 # Local assets used for testing
 testdata/fixtures/*.jpg
@@ -31,6 +35,9 @@ testdata/fixtures/*.heic
 # Editor/IDE
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -39,9 +46,11 @@ testdata/fixtures/*.heic
 go.work
 go.work.sum
 
-# env file
-.env
+# OS
+darwin_darwin_amd64.tar.gz
+darwin_arm64.tar.gz
+linux_amd64.tar.gz
+linux_arm64.tar.gz
+windows_amd64.zip
+windows_arm64.zip
 
-# Editor/IDE
-# .idea/
-# .vscode/

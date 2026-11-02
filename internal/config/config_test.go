@@ -17,8 +17,8 @@ func TestLoadConfigDefaults(t *testing.T) {
 	os.Unsetenv("PORT")
 
 	cfg := LoadConfig()
-	if cfg.DataDir != "./data" {
-		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "./data")
+	if cfg.DataDir != "/data" {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, "/data")
 	}
 	if len(cfg.ImportRoots) != 1 || cfg.ImportRoots[0] != "./imports" {
 		t.Errorf("ImportRoots = %v, want %v", cfg.ImportRoots, []string{"./imports"})

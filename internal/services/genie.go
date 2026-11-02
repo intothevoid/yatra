@@ -148,7 +148,10 @@ func (g *Genie) GenerateArticle(ctx context.Context, tripID string) error {
 		}
 	}
 
-	// Update trip status
+	// Update trip status: GENERATING -> EDITING
+	if err := g.store.Trips.UpdateStatus(ctx, tripID, domain.StatusGenerating); err != nil {
+		return fmt.Errorf("update status: %w", err)
+	}
 	if err := g.store.Trips.UpdateStatus(ctx, tripID, domain.StatusEditing); err != nil {
 		return fmt.Errorf("update status: %w", err)
 	}
