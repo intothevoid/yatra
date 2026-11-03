@@ -45,7 +45,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 
 	// Run migrations
 	migrator := NewMigrator(db)
-	if err := migrator.MigrateTo(ctx, 3); err != nil {
+	if err := migrator.MigrateTo(ctx, 4); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}

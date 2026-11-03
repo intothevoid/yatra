@@ -74,11 +74,15 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
 .photo-filters { display: flex; gap: 8px; margin: 16px 0 6px; }
 .photo-filters button { padding: 8px 13px; border: 1px solid var(--line); border-radius: 999px; background: white; color: var(--muted); font: inherit; font-size: 13px; }
 .photo-filters button.active { border-color: var(--green); background: #e8eee8; color: var(--ink); }
-.photo-card { display: flex; flex-direction: column; overflow: hidden; padding: 0; border: 2px solid transparent; border-radius: 10px; background: #fffefa; text-align: left; color: var(--ink); }
+.photo-tile { position: relative; min-width: 0; }
+.photo-card { width: 100%; display: flex; flex-direction: column; overflow: hidden; padding: 0; border: 2px solid transparent; border-radius: 10px; background: #fffefa; text-align: left; color: var(--ink); }
 .photo-card.chosen { border-color: #718a73; }
 .photo-image { position: relative; display: block; aspect-ratio: 1; overflow: hidden; background: #ecece5; }
 .photo-card:not(.chosen) img { opacity: .72; }
 .photo-check { position: absolute; z-index: 1; top: 9px; right: 9px; display: grid; width: 27px; height: 27px; place-items: center; border-radius: 50%; background: rgba(255,255,255,.94); color: var(--green); font-weight: 700; }
+.photo-feature-button { position: absolute; z-index: 2; top: 9px; left: 9px; display: grid; width: 29px; height: 29px; place-items: center; padding: 0; border: 0; border-radius: 50%; background: rgba(255,255,255,.94); color: #56665a; font-size: 20px; line-height: 1; }
+.photo-feature-button.active { background: #f2d888; color: #493d13; }
+.photo-feature-button:hover { transform: scale(1.06); }
 .photo-description { display: -webkit-box; min-height: 2.8em; overflow: hidden; padding: 8px 9px; color: #59645b; font-size: 11px; line-height: 1.4; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .draft-button { position: sticky; bottom: 12px; z-index: 2; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 7px 28px rgba(34,53,39,.2); }
 .draft-button span { font-size: 19px; }
@@ -111,6 +115,7 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
   .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .review-tools { align-items: flex-end; flex-direction: column; gap: 8px; }
   .photo-card { border-radius: 7px; }
+  .photo-feature-button { top: 6px; left: 6px; width: 25px; height: 25px; font-size: 17px; }
   .photo-description { min-height: 2.6em; padding: 6px 5px; font-size: 10px; }
   .photo-check { top: 6px; right: 6px; width: 24px; height: 24px; }
   .trip-row { grid-template-columns: minmax(0, 1fr) 32px; gap: 4px; padding: 8px 8px 8px 14px; }

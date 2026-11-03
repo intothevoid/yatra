@@ -54,6 +54,7 @@ func (a *App) Router() http.Handler {
 	r.Delete("/api/v1/trips/{id}", a.deleteTrip)
 	r.Post("/api/v1/trips/import-path", a.importTrip)
 	r.Get("/api/v1/trips/{id}", a.getTrip)
+	r.Put("/api/v1/trips/{id}/feature-photo", a.setFeaturePhoto)
 	r.Post("/api/v1/trips/{id}/analyse", a.analyseTrip)
 
 	r.Get("/api/v1/trips/{id}/photos", a.listPhotos)
@@ -198,6 +199,34 @@ func (a *App) getTrip(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(trip)
 }
 
+func (a *App) setFeaturePhoto(w http.ResponseWriter, r *http.Request) {
+	tripID := chi.URLParam(r, "id")
+	if _, err := a.store.Trips.Get(r.Context(), tripID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var req struct {
+		PhotoID string `json:"photo_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(apiErr("bad_request", "invalid JSON"))
+		return
+	}
+	if err := a.store.Trips.SetFeaturePhoto(r.Context(), tripID, req.PhotoID); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(apiErr("invalid_feature_photo", err.Error()))
+		return
+	}
+	trip, err := a.store.Trips.Get(r.Context(), tripID)
+	if err != nil {
+		http.Error(w, "could not reload trip", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(trip)
+}
+
 // analyseTrip queues analysis for a trip.
 func (a *App) analyseTrip(w http.ResponseWriter, r *http.Request) {
 	tripID := chi.URLParam(r, "id")
@@ -290,12 +319,39 @@ func (a *App) updatePhotoSelection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trip, err := a.store.Trips.Get(r.Context(), tripID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	photos, err := a.store.Photos.GetByTrip(r.Context(), tripID)
+	if err != nil {
+		http.Error(w, "could not load trip photos", http.StatusInternalServerError)
+		return
+	}
+	belongs := false
+	for _, photo := range photos {
+		if photo.ID == photoID {
+			belongs = true
+			break
+		}
+	}
+	if !belongs {
+		http.NotFound(w, r)
+		return
+	}
 	if err := a.store.Photos.UpdateSelection(r.Context(), photoID, req.Status); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
 		return
 	}
-	_ = tripID
+	if req.Status == domain.PhotoStatusNotSelected && trip.FeaturePhotoID == photoID {
+		if err := a.store.Trips.ClearFeaturePhotoIf(r.Context(), tripID, photoID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
+			return
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"ok":true}`)
 }

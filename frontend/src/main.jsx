@@ -82,6 +82,7 @@ function App() {
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [maxUploadFiles, setMaxUploadFiles] = useState(200);
   const [photoFilter, setPhotoFilter] = useState('all');
+  const [featurePhotoID, setFeaturePhotoID] = useState('');
   const [form, setForm] = useState({ title: '', location: '', notes: '' });
   const fileRef = useRef(null);
   const saveTimer = useRef(null);
@@ -160,7 +161,7 @@ function App() {
       if (['EDITING', 'ARTICLE_APPROVED', 'EXPORTED_DRAFT'].includes(nextTrip.status)) {
         try { existingArticle = await api(`/api/v1/articles/art_${id}`); } catch { /* no saved article yet */ }
       }
-      setTrip(nextTrip); setPhotos(nextPhotos || []); setArticle(existingArticle); setPhotoFilter('all'); setScreen('trip');
+      setTrip(nextTrip); setPhotos(nextPhotos || []); setArticle(existingArticle); setPhotoFilter('all'); setFeaturePhotoID(nextTrip.feature_photo_id || ''); setScreen('trip');
       if (!existingArticle && nextPhotos?.length && nextPhotos.some((photo) => !photo.description)) {
         setBusy(true); setNotice('Describing your photos… This may take a few minutes.');
         try {
@@ -180,6 +181,16 @@ function App() {
     try {
       await api(`/api/v1/trips/${trip.id}/photos/${photo.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
       setPhotos((items) => items.map((p) => p.id === photo.id ? { ...p, status } : p));
+      if (!selected && featurePhotoID === photo.id) setFeaturePhotoID('');
+    } catch (e) { setError(e.message); }
+  };
+
+  const chooseFeaturePhoto = async (photo) => {
+    setError('');
+    try {
+      const updatedTrip = await api(`/api/v1/trips/${trip.id}/feature-photo`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ photo_id: photo.id }) });
+      setTrip(updatedTrip); setFeaturePhotoID(photo.id);
+      setPhotos((items) => items.map((p) => p.id === photo.id ? { ...p, status: ['not_selected', 'unknown'].includes(p.status) ? 'recommended' : p.status } : p));
     } catch (e) { setError(e.message); }
   };
 
@@ -281,12 +292,12 @@ function App() {
         <section className="trip-heading"><p className="eyebrow">{trip.location || 'YOUR TRIP'}</p><h1>{trip.name}</h1><p className="intro">Choose the photos that tell the story. We’ll use your notes and destination to write a first draft.</p></section>
         {trip.notes && <section className="notes-card"><p className="eyebrow">YOUR NOTES</p><p>{trip.notes}</p></section>}
         {article ? <button className="button button-primary" onClick={openEditor}>Continue editing this draft</button> : <>
-          <div className="review-toolbar"><div><h2>Photo review</h2><p>{photos.filter((p) => p.status !== 'not_selected').length} of {photos.length} selected</p><p className="field-help">Recommended picks are marked, and you can choose any of your uploaded photos.</p></div><div className="review-tools"><button className="text-button" onClick={async () => { const next = photos.map((p) => ({ ...p, status: 'recommended' })); setPhotos(next); try { await api(`/api/v1/trips/${trip.id}/photos/select-all`, { method: 'POST' }); } catch (e) { setError(e.message); try { setPhotos(await api(`/api/v1/trips/${trip.id}/photos`)); } catch { /* retain optimistic state if refresh fails */ } } }}>Select all</button></div></div>
+          <div className="review-toolbar"><div><h2>Photo review</h2><p>{photos.filter((p) => p.status !== 'not_selected').length} of {photos.length} selected</p><p className="field-help">Choose the photos for your story. Tap the star on a photo to use it as the post header image.</p></div><div className="review-tools"><button className="text-button" onClick={async () => { const next = photos.map((p) => ({ ...p, status: 'recommended' })); setPhotos(next); try { await api(`/api/v1/trips/${trip.id}/photos/select-all`, { method: 'POST' }); } catch (e) { setError(e.message); try { setPhotos(await api(`/api/v1/trips/${trip.id}/photos`)); } catch { /* retain optimistic state if refresh fails */ } } }}>Select all</button></div></div>
           <div className="photo-filters" role="group" aria-label="Filter photos">
             <button type="button" className={photoFilter === 'all' ? 'active' : ''} onClick={() => setPhotoFilter('all')}>All photos ({photos.length})</button>
             <button type="button" className={photoFilter === 'recommended' ? 'active' : ''} onClick={() => setPhotoFilter('recommended')}>Recommended ({recommendedPhotos.length})</button>
           </div>
-          <div className="photo-grid">{visiblePhotos.map((photo) => { const chosen = photo.status !== 'not_selected'; return <button key={photo.id} className={`photo-card ${chosen ? 'chosen' : ''}`} onClick={() => setPhotoSelected(photo, !chosen)} aria-pressed={chosen} title={photo.description || undefined}><span className="photo-image"><img src={photo.thumbnail} alt={photo.description || 'Trip photo'} loading="lazy" /><span className="photo-check">{chosen ? '✓' : '+'}</span></span>{photo.description && <span className="photo-description">{photo.description}</span>}</button>; })}</div>
+          <div className="photo-grid">{visiblePhotos.map((photo) => { const chosen = photo.status !== 'not_selected'; const isFeature = featurePhotoID === photo.id; return <div key={photo.id} className="photo-tile"><button className={`photo-card ${chosen ? 'chosen' : ''}`} onClick={() => setPhotoSelected(photo, !chosen)} aria-pressed={chosen} title={photo.description || undefined}><span className="photo-image"><img src={photo.thumbnail} alt={photo.description || 'Trip photo'} loading="lazy" /><span className="photo-check">{chosen ? '✓' : '+'}</span></span>{photo.description && <span className="photo-description">{photo.description}</span>}</button><button className={`photo-feature-button ${isFeature ? 'active' : ''}`} onClick={() => chooseFeaturePhoto(photo)} aria-label={isFeature ? 'Header image selected' : 'Use as post header image'} aria-pressed={isFeature} title={isFeature ? 'Header image' : 'Use as post header image'}>{isFeature ? '★' : '☆'}</button></div>; })}</div>
           <button className="button button-primary full-button draft-button" disabled={busy || photos.length === 0} onClick={generate}>{busy ? 'Writing your draft…' : 'Create my draft'}<span>→</span></button>
         </>}
       </>}

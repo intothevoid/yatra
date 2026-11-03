@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -59,8 +60,23 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 		return nil, err
 	}
 
-	// Build prompt for section drafting
-	prompt := d.buildPrompt(trip, experiences, matches, photos, research.Summary)
+	selectedPhotoIDs := make([]string, 0, len(photos))
+	for _, photo := range photos {
+		if photo.Status != domain.PhotoStatusNotSelected {
+			selectedPhotoIDs = append(selectedPhotoIDs, photo.ID)
+		}
+	}
+	featurePhotoID := trip.FeaturePhotoID
+	if !containsString(selectedPhotoIDs, featurePhotoID) {
+		featurePhotoID = selectFeaturePhoto(matches)
+	}
+	if !containsString(selectedPhotoIDs, featurePhotoID) && len(selectedPhotoIDs) > 0 {
+		featurePhotoID = selectedPhotoIDs[0]
+	}
+
+	// Build prompt with stable photo markers so the writer can place each photo
+	// near the paragraph it actually illustrates.
+	prompt := d.buildPrompt(trip, experiences, matches, photos, research.Summary, featurePhotoID)
 
 	// Generate narrative
 	response, err := d.text.Generate(ctx, prompt)
@@ -69,15 +85,9 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 	}
 
 	// Parse response into blocks
-	blocks := d.parseBlocks(response, matches)
-	selectedPhotoIDs := make([]string, 0, len(photos))
-	for _, photo := range photos {
-		if photo.Status != domain.PhotoStatusNotSelected {
-			selectedPhotoIDs = append(selectedPhotoIDs, photo.ID)
-		}
-	}
+	blocks := d.parseBlocks(response, matches, photos, featurePhotoID)
 	if len(selectedPhotoIDs) > 0 {
-		blocks = interleavePhotos(blocks, photos)
+		blocks = interleavePhotos(blocks, photos, featurePhotoID)
 	}
 
 	// Create article document
@@ -86,15 +96,12 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 		ArticleID:       "art_" + tripID,
 		Title:           trip.Name,
 		Slug:            domain.GenerateSlug(trip.Name),
-		Excerpt:         truncate(response, 200),
+		Excerpt:         truncate(photoPlacementMarker.ReplaceAllString(response, ""), 200),
 		ResearchSummary: research.Summary,
 		ResearchSources: research.Sources,
-		FeaturePhotoID:  selectFeaturePhoto(matches),
+		FeaturePhotoID:  featurePhotoID,
 		Tags:            extractTags(experiences),
 		Blocks:          blocks,
-	}
-	if doc.FeaturePhotoID == "" && len(selectedPhotoIDs) > 0 {
-		doc.FeaturePhotoID = selectedPhotoIDs[0]
 	}
 
 	// Save article. Generation can be retried after a partial failure, so the
@@ -119,25 +126,27 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 	return doc, nil
 }
 
-// interleavePhotos places the lead photo before the introduction, then attaches
-// each remaining photo to the most relevant paragraph instead of collecting
-// every image in one gallery.
-func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo) []domain.ArticleBlock {
+// interleavePhotos uses any explicit placements from the writer first, then
+// matches unplaced photos to the most relevant paragraph using visual subjects
+// and category as well as the generated description. The feature image is
+// represented by Ghost's header image and is not repeated in the article body.
+func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featurePhotoID string) []domain.ArticleBlock {
 	var selected []domain.Photo
+	placed := make(map[string]bool)
+	for _, block := range blocks {
+		if block.Type == domain.BlockImage && len(block.PhotoIDs) > 0 {
+			placed[block.PhotoIDs[0]] = true
+		}
+	}
 	for _, photo := range photos {
-		if photo.Status != domain.PhotoStatusNotSelected {
+		if photo.Status != domain.PhotoStatusNotSelected && photo.ID != featurePhotoID && !placed[photo.ID] {
 			selected = append(selected, photo)
 		}
 	}
 	if len(selected) == 0 {
 		return blocks
 	}
-
-	lead := selected[0]
-	result := []domain.ArticleBlock{{ID: "trip_lead_photo", Type: domain.BlockImage, PhotoIDs: []string{lead.ID}, AltText: photoDescription(lead), Caption: photoDescription(lead)}}
-	if len(selected) == 1 {
-		return append(result, blocks...)
-	}
+	result := make([]domain.ArticleBlock, 0, len(blocks)+len(selected))
 
 	paragraphIndexes := make([]int, 0)
 	for i, block := range blocks {
@@ -146,11 +155,15 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo) []dom
 		}
 	}
 	if len(paragraphIndexes) == 0 {
-		paragraphIndexes = []int{len(blocks) - 1}
+		for i, photo := range selected {
+			description := photoDescription(photo)
+			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+		}
+		return blocks
 	}
 	assigned := make(map[int][]domain.Photo)
 	for photoIndex, photo := range selected[1:] {
-		description := photoDescription(photo)
+		description := photoContext(photo)
 		bestIndex, bestScore := paragraphIndexes[photoIndex%len(paragraphIndexes)], -1.0
 		for _, blockIndex := range paragraphIndexes {
 			text := blocks[blockIndex].Text
@@ -165,7 +178,7 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo) []dom
 		assigned[bestIndex] = append(assigned[bestIndex], photo)
 	}
 
-	imageID := 1
+	imageID := len(placed) + 1
 	for i, block := range blocks {
 		result = append(result, block)
 		for _, photo := range assigned[i] {
@@ -189,6 +202,14 @@ func photoDescription(photo domain.Photo) string {
 		return strings.TrimSpace(result.Observed.Description)
 	}
 	return ""
+}
+
+func photoContext(photo domain.Photo) string {
+	var result domain.VisionResult
+	if photo.VLMResult == "" || json.Unmarshal([]byte(photo.VLMResult), &result) != nil {
+		return ""
+	}
+	return strings.TrimSpace(strings.Join(append([]string{result.Observed.Description, result.Observed.Category}, result.Observed.Subjects...), " "))
 }
 
 func keywordOverlap(a, b string) float64 {
@@ -215,7 +236,7 @@ func keywordOverlap(a, b string) float64 {
 	return float64(overlap) / float64(len(left))
 }
 
-func (d *SectionDrafter) buildPrompt(trip *domain.Trip, experiences []store.Experience, matches []domain.PhotoMatch, photos []domain.Photo, research string) string {
+func (d *SectionDrafter) buildPrompt(trip *domain.Trip, experiences []store.Experience, matches []domain.PhotoMatch, photos []domain.Photo, research, featurePhotoID string) string {
 	var sb strings.Builder
 	sb.WriteString("Write a first-person travel blog post using the supplied trip details, notes, and photo descriptions.\n\n")
 	sb.WriteString("Post title: " + trip.Name + "\n")
@@ -229,16 +250,21 @@ func (d *SectionDrafter) buildPrompt(trip *domain.Trip, experiences []store.Expe
 	if research != "" {
 		sb.WriteString("Background information about the destination. Use a small amount in the introduction or relevant sections. Keep these facts separate from first-person memories, and omit anything uncertain:\n" + research + "\n\n")
 	}
-	sb.WriteString("What can be seen in the selected photos:\n")
+	sb.WriteString("Selected photos and placement instructions:\n")
 	for _, photo := range photos {
 		if photo.Status == domain.PhotoStatusNotSelected || photo.VLMResult == "" {
 			continue
 		}
 		var result domain.VisionResult
 		if json.Unmarshal([]byte(photo.VLMResult), &result) == nil && result.Observed.Description != "" {
-			sb.WriteString(fmt.Sprintf("- %s\n", result.Observed.Description))
+			if photo.ID == featurePhotoID {
+				sb.WriteString(fmt.Sprintf("- Header image (do not add a marker): %s\n", photoContext(photo)))
+			} else {
+				sb.WriteString(fmt.Sprintf("- Photo ID %s: %s\n", photo.ID, photoContext(photo)))
+			}
 		}
 	}
+	sb.WriteString("Place each non-header photo immediately after the paragraph that discusses the subject shown in that photo. Add its marker on its own line: [[PHOTO:<exact photo ID>]]. A food photo belongs after the food paragraph, a beach photo after beach text, and so on. Use only IDs listed above; do not put markers in the prose. The app removes markers and turns them into captioned images.\n\n")
 	sb.WriteString("Experiences:\n")
 	for i, exp := range experiences {
 		// NoteSpans is JSON, extract first span text
@@ -272,8 +298,26 @@ func (d *SectionDrafter) buildPrompt(trip *domain.Trip, experiences []store.Expe
 	return sb.String()
 }
 
-func (d *SectionDrafter) parseBlocks(response string, matches []domain.PhotoMatch) []domain.ArticleBlock {
+var photoPlacementMarker = regexp.MustCompile(`\[\[PHOTO:([^\]]+)\]\]`)
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func (d *SectionDrafter) parseBlocks(response string, matches []domain.PhotoMatch, photos []domain.Photo, featurePhotoID string) []domain.ArticleBlock {
 	var blocks []domain.ArticleBlock
+	photoByID := make(map[string]domain.Photo, len(photos))
+	for _, photo := range photos {
+		if photo.Status != domain.PhotoStatusNotSelected && photo.ID != featurePhotoID {
+			photoByID[photo.ID] = photo
+		}
+	}
+	placed := make(map[string]bool)
 
 	// Split by double newline for paragraphs
 	paragraphs := strings.Split(response, "\n\n")
@@ -284,16 +328,22 @@ func (d *SectionDrafter) parseBlocks(response string, matches []domain.PhotoMatc
 		if para == "" {
 			continue
 		}
+		markers := photoPlacementMarker.FindAllStringSubmatch(para, -1)
+		para = strings.TrimSpace(photoPlacementMarker.ReplaceAllString(para, ""))
 
-		// Check if this looks like a heading
-		if len(para) < 100 && !strings.HasSuffix(para, ".") {
+		headingText, headingLevel, markdownHeading := parseMarkdownHeading(para)
+		// Keep support for plain-text model headings while correctly converting
+		// explicit Markdown ## and ### headings to editor heading blocks.
+		if markdownHeading {
+			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("b%d", blockID), Type: domain.BlockHeading, Text: headingText, Level: headingLevel})
+		} else if para != "" && len(para) < 100 && !strings.HasSuffix(para, ".") {
 			blocks = append(blocks, domain.ArticleBlock{
 				ID:    fmt.Sprintf("b%d", blockID),
 				Type:  domain.BlockHeading,
 				Text:  para,
 				Level: 2,
 			})
-		} else {
+		} else if para != "" {
 			block := domain.ArticleBlock{
 				ID:   fmt.Sprintf("b%d", blockID),
 				Type: domain.BlockParagraph,
@@ -302,10 +352,31 @@ func (d *SectionDrafter) parseBlocks(response string, matches []domain.PhotoMatc
 
 			blocks = append(blocks, block)
 		}
+		for _, marker := range markers {
+			photo, ok := photoByID[marker[1]]
+			if !ok || placed[photo.ID] {
+				continue
+			}
+			description := photoDescription(photo)
+			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", len(placed)+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+			placed[photo.ID] = true
+		}
 		blockID++
 	}
 
 	return blocks
+}
+
+func parseMarkdownHeading(text string) (string, int, bool) {
+	trimmed := strings.TrimLeft(text, " \t")
+	level := 0
+	for level < len(trimmed) && trimmed[level] == '#' {
+		level++
+	}
+	if level < 1 || level > 6 || level == len(trimmed) || trimmed[level] != ' ' {
+		return text, 0, false
+	}
+	return strings.TrimSpace(trimmed[level:]), level, true
 }
 
 func truncate(s string, n int) string {

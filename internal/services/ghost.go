@@ -96,17 +96,19 @@ func (e *GhostExporter) CreateDraft(ctx context.Context, tripID string) error {
 
 // GhostPost is the Ghost Admin API post format.
 type GhostPost struct {
-	ID           string     `json:"id,omitempty"`
-	Title        string     `json:"title"`
-	Slug         string     `json:"slug"`
-	HTML         string     `json:"html,omitempty"`
-	Lexical      string     `json:"lexical,omitempty"`
-	Excerpt      string     `json:"custom_excerpt,omitempty"`
-	Tags         []GhostTag `json:"tags"`
-	Featured     bool       `json:"featured,omitempty"`
-	FeatureImage string     `json:"feature_image,omitempty"`
-	Status       string     `json:"status"` // "draft"
-	UpdatedAt    string     `json:"updated_at,omitempty"`
+	ID                  string     `json:"id,omitempty"`
+	Title               string     `json:"title"`
+	Slug                string     `json:"slug"`
+	HTML                string     `json:"html,omitempty"`
+	Lexical             string     `json:"lexical,omitempty"`
+	Excerpt             string     `json:"custom_excerpt,omitempty"`
+	Tags                []GhostTag `json:"tags"`
+	Featured            bool       `json:"featured,omitempty"`
+	FeatureImage        string     `json:"feature_image,omitempty"`
+	FeatureImageAlt     string     `json:"feature_image_alt,omitempty"`
+	FeatureImageCaption string     `json:"feature_image_caption,omitempty"`
+	Status              string     `json:"status"` // "draft"
+	UpdatedAt           string     `json:"updated_at,omitempty"`
 }
 
 // GhostTag is a Ghost tag.
@@ -116,6 +118,7 @@ type GhostTag struct {
 
 func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleDocument) (GhostPost, error) {
 	photoURLs := make(map[string]string)
+	photoDescriptions := make(map[string]string)
 	photoIDs := []string{doc.FeaturePhotoID}
 	if doc.Lexical != "" {
 		for _, match := range regexp.MustCompile(`/api/v1/photos/(p_[^/]+)/thumbnail`).FindAllStringSubmatch(doc.Lexical, -1) {
@@ -140,6 +143,7 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 		if path == "" {
 			return GhostPost{}, fmt.Errorf("photo %s has no export image", photoID)
 		}
+		photoDescriptions[photoID] = photoDescription(*photo)
 		remoteURL, err := e.client.UploadImage(ctx, path)
 		if err != nil {
 			return GhostPost{}, fmt.Errorf("upload photo %s: %w", photoID, err)
@@ -147,13 +151,31 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 		photoURLs[photoID] = remoteURL
 	}
 
-	blocks := make([]domain.ArticleBlock, len(doc.Blocks))
-	copy(blocks, doc.Blocks)
-	for i := range blocks {
-		blocks[i].PhotoIDs = append([]string(nil), blocks[i].PhotoIDs...)
-		for j, photoID := range blocks[i].PhotoIDs {
-			blocks[i].PhotoIDs[j] = photoURLs[photoID]
+	var blocks []domain.ArticleBlock
+	for _, sourceBlock := range doc.Blocks {
+		if sourceBlock.Type == domain.BlockGallery {
+			// Expand legacy galleries so each image can carry its own description
+			// as a caption in the Ghost post.
+			for i, photoID := range sourceBlock.PhotoIDs {
+				description := photoDescriptions[photoID]
+				blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("ghost_gallery_image_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photoURLs[photoID]}, AltText: description, Caption: description})
+			}
+			continue
 		}
+		block := sourceBlock
+		block.PhotoIDs = append([]string(nil), sourceBlock.PhotoIDs...)
+		for j, photoID := range block.PhotoIDs {
+			if block.Type == domain.BlockImage {
+				if block.AltText == "" {
+					block.AltText = photoDescriptions[photoID]
+				}
+				if block.Caption == "" {
+					block.Caption = photoDescriptions[photoID]
+				}
+			}
+			block.PhotoIDs[j] = photoURLs[photoID]
+		}
+		blocks = append(blocks, block)
 	}
 	contentHTML := blocksToHTML(blocks)
 	var lexical string
@@ -162,6 +184,7 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 		if err := json.Unmarshal([]byte(doc.Lexical), &state); err != nil {
 			return GhostPost{}, fmt.Errorf("parse editor document: %w", err)
 		}
+		state = enrichLexicalCaptions(state, photoDescriptions)
 		state = replacePhotoURLs(state, photoURLs)
 		data, err := json.Marshal(state)
 		if err != nil {
@@ -177,15 +200,35 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 	}
 
 	return GhostPost{
-		Title:        doc.Title,
-		Slug:         doc.Slug,
-		HTML:         contentHTML,
-		Lexical:      lexical,
-		Excerpt:      doc.Excerpt,
-		Tags:         tags,
-		FeatureImage: photoURLs[doc.FeaturePhotoID],
-		Status:       "draft",
+		Title:               doc.Title,
+		Slug:                doc.Slug,
+		HTML:                contentHTML,
+		Lexical:             lexical,
+		Excerpt:             doc.Excerpt,
+		Tags:                tags,
+		FeatureImage:        photoURLs[doc.FeaturePhotoID],
+		FeatureImageAlt:     limitUTF16(photoDescriptions[doc.FeaturePhotoID], 125),
+		FeatureImageCaption: photoDescriptions[doc.FeaturePhotoID],
+		Status:              "draft",
 	}, nil
+}
+
+func limitUTF16(value string, maxUnits int) string {
+	runes := []rune(strings.TrimSpace(value))
+	units := 0
+	var result strings.Builder
+	for _, r := range runes {
+		width := 1
+		if r > 0xFFFF {
+			width = 2
+		}
+		if units+width > maxUnits {
+			break
+		}
+		result.WriteRune(r)
+		units += width
+	}
+	return strings.TrimSpace(result.String())
 }
 
 func replacePhotoURLs(value any, photoURLs map[string]string) any {
@@ -210,16 +253,98 @@ func replacePhotoURLs(value any, photoURLs map[string]string) any {
 	}
 }
 
+var lexicalPhotoURLPattern = regexp.MustCompile(`/api/v1/photos/(p_[^/]+)/thumbnail`)
+
+func enrichLexicalCaptions(value any, descriptions map[string]string) any {
+	switch item := value.(type) {
+	case map[string]any:
+		if item["type"] == "heading" {
+			if children, ok := item["children"].([]any); ok {
+				if level := stripMarkdownHeading(children); level > 0 {
+					item["tag"] = fmt.Sprintf("h%d", level)
+				}
+			}
+		}
+		for key, child := range item {
+			item[key] = enrichLexicalCaptions(child, descriptions)
+		}
+		if source, ok := item["src"].(string); ok {
+			photoID := ""
+			if match := lexicalPhotoURLPattern.FindStringSubmatch(source); len(match) == 2 {
+				photoID = match[1]
+			}
+			if photoID == "" {
+				if fileName, ok := item["fileName"].(string); ok && strings.HasPrefix(fileName, "p_") {
+					photoID = fileName
+				}
+			}
+			if description := descriptions[photoID]; description != "" {
+				caption, _ := item["caption"].(string)
+				if strings.TrimSpace(caption) == "" {
+					item["caption"] = description
+				}
+				if item["type"] == "image" {
+					alt, _ := item["alt"].(string)
+					if strings.TrimSpace(alt) == "" {
+						item["alt"] = description
+					}
+				}
+			}
+		}
+		return item
+	case []any:
+		for i, child := range item {
+			item[i] = enrichLexicalCaptions(child, descriptions)
+		}
+		return item
+	default:
+		return value
+	}
+}
+
+func stripMarkdownHeading(children []any) int {
+	for _, child := range children {
+		switch item := child.(type) {
+		case map[string]any:
+			if item["type"] == "text" {
+				if text, ok := item["text"].(string); ok {
+					clean, level, marked := parseMarkdownHeading(text)
+					if marked {
+						item["text"] = clean
+						return level
+					}
+				}
+			}
+			if nested, ok := item["children"].([]any); ok {
+				if level := stripMarkdownHeading(nested); level > 0 {
+					return level
+				}
+			}
+		case []any:
+			if level := stripMarkdownHeading(item); level > 0 {
+				return level
+			}
+		}
+	}
+	return 0
+}
+
 func blocksToHTML(blocks []domain.ArticleBlock) string {
 	var buf bytes.Buffer
 	for _, block := range blocks {
 		switch block.Type {
 		case domain.BlockHeading:
 			level := block.Level
+			text, markedLevel, marked := parseMarkdownHeading(block.Text)
+			if marked {
+				level = markedLevel
+			} else {
+				text = block.Text
+			}
 			if level < 1 || level > 6 {
 				level = 2
 			}
-			buf.WriteString(fmt.Sprintf("<h%d>%s</h%d>\n", level, escapeHTML(block.Text), level))
+			buf.WriteString(fmt.Sprintf("<h%d>%s</h%d>\n", level, escapeHTML(text), level))
 		case domain.BlockParagraph:
 			buf.WriteString(fmt.Sprintf("<p>%s</p>\n", escapeHTML(block.Text)))
 		case domain.BlockImage:

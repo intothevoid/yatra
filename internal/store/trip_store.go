@@ -18,17 +18,18 @@ type TripStore struct {
 func (s *TripStore) Save(ctx context.Context, trip domain.Trip) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO trips (id, name, source_path, notes_hash, status, created_at, updated_at, location, notes)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO trips (id, name, source_path, notes_hash, status, created_at, updated_at, location, notes, feature_photo_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			source_path = excluded.source_path,
 			notes_hash = excluded.notes_hash,
 			location = excluded.location,
 			notes = excluded.notes,
+			feature_photo_id = excluded.feature_photo_id,
 			status = excluded.status,
 			updated_at = excluded.updated_at
-	`, trip.ID, trip.Name, trip.SourcePath, trip.NotesHash, trip.Status, now, now, trip.Location, trip.Notes)
+	`, trip.ID, trip.Name, trip.SourcePath, trip.NotesHash, trip.Status, now, now, trip.Location, trip.Notes, trip.FeaturePhotoID)
 	return err
 }
 
@@ -37,9 +38,9 @@ func (s *TripStore) Get(ctx context.Context, id string) (*domain.Trip, error) {
 	var trip domain.Trip
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, source_path, notes_hash, status, created_at, updated_at, location, notes
+		SELECT id, name, source_path, notes_hash, status, created_at, updated_at, location, notes, feature_photo_id
 		FROM trips WHERE id = ?
-	`, id).Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt, &trip.Location, &trip.Notes)
+	`, id).Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt, &trip.Location, &trip.Notes, &trip.FeaturePhotoID)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +52,7 @@ func (s *TripStore) Get(ctx context.Context, id string) (*domain.Trip, error) {
 // List returns all trips.
 func (s *TripStore) List(ctx context.Context) ([]domain.Trip, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, source_path, notes_hash, status, created_at, updated_at, location, notes
+		SELECT id, name, source_path, notes_hash, status, created_at, updated_at, location, notes, feature_photo_id
 		FROM trips ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -63,7 +64,7 @@ func (s *TripStore) List(ctx context.Context) ([]domain.Trip, error) {
 	for rows.Next() {
 		var trip domain.Trip
 		var createdAt, updatedAt string
-		if err := rows.Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt, &trip.Location, &trip.Notes); err != nil {
+		if err := rows.Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt, &trip.Location, &trip.Notes, &trip.FeaturePhotoID); err != nil {
 			return nil, err
 		}
 		trip.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -71,6 +72,37 @@ func (s *TripStore) List(ctx context.Context) ([]domain.Trip, error) {
 		trips = append(trips, trip)
 	}
 	return trips, rows.Err()
+}
+
+// SetFeaturePhoto stores the selected cover image and ensures it remains part
+// of the trip's selected photos.
+func (s *TripStore) SetFeaturePhoto(ctx context.Context, tripID, photoID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if photoID != "" {
+		var exists int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM source_files WHERE trip_id = ? AND 'p_' || sha256 = ?`, tripID, photoID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return fmt.Errorf("photo does not belong to trip")
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE photos SET status = CASE WHEN status IN ('not_selected', 'unknown') THEN 'recommended' ELSE status END WHERE id = ?`, photoID); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE trips SET feature_photo_id = ?, updated_at = ? WHERE id = ?`, photoID, time.Now().UTC().Format(time.RFC3339), tripID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func (s *TripStore) ClearFeaturePhotoIf(ctx context.Context, tripID, photoID string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE trips SET feature_photo_id = '', updated_at = ? WHERE id = ? AND feature_photo_id = ?`, time.Now().UTC().Format(time.RFC3339), tripID, photoID)
+	return err
 }
 
 // Delete removes a trip and its dependent records. It refuses to delete while

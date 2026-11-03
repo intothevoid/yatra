@@ -70,6 +70,7 @@ func (i *Importer) importTrip(ctx context.Context, tripID, sourcePath string) er
 		trip.Name = existing.Name
 		trip.Location = existing.Location
 		trip.Notes = existing.Notes
+		trip.FeaturePhotoID = existing.FeaturePhotoID
 		trip.Status = existing.Status
 		if trip.NotesHash == "" {
 			trip.NotesHash = existing.NotesHash
