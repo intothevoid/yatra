@@ -19,3 +19,25 @@ type ImageProcessor interface {
 	// CanProcessHEIC returns true if HEIC files can be decoded.
 	CanProcessHEIC(ctx context.Context) bool
 }
+
+// SystemImageProcessor combines the image transformer and EXIF tool adapters.
+type SystemImageProcessor struct {
+	EXIF *ExifToolAdapter
+	Vips *VipsProcessor
+}
+
+func (p *SystemImageProcessor) ExtractEXIF(ctx context.Context, path string) (map[string]string, error) {
+	return p.EXIF.ExtractEXIF(ctx, path)
+}
+func (p *SystemImageProcessor) GenerateThumbnail(ctx context.Context, src, dst string) error {
+	return p.Vips.GenerateThumbnail(ctx, src, dst)
+}
+func (p *SystemImageProcessor) GeneratePreview(ctx context.Context, src, dst string) error {
+	return p.Vips.GeneratePreview(ctx, src, dst)
+}
+func (p *SystemImageProcessor) GenerateExport(ctx context.Context, src, dst string) error {
+	return p.Vips.GenerateExport(ctx, src, dst)
+}
+func (p *SystemImageProcessor) CanProcessHEIC(ctx context.Context) bool {
+	return p.Vips.CanProcessHEIC(ctx)
+}

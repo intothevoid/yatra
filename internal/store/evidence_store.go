@@ -18,12 +18,12 @@ func (s *Store) SaveExperience(ctx context.Context, exp any) error {
 
 	// Parse into a flat structure for storage
 	var flat struct {
-		ID          string   `json:"id"`
-		TripID      string   `json:"trip_id"`
+		ID          string          `json:"id"`
+		TripID      string          `json:"trip_id"`
 		NoteSpans   json.RawMessage `json:"note_spans"`
-		Location    string   `json:"location"`
+		Location    string          `json:"location"`
 		Foods       json.RawMessage `json:"foods"`
-		Sentiment   string   `json:"sentiment"`
+		Sentiment   string          `json:"sentiment"`
 		Uncertainty json.RawMessage `json:"uncertainty"`
 	}
 	if err := json.Unmarshal(data, &flat); err != nil {
@@ -33,6 +33,13 @@ func (s *Store) SaveExperience(ctx context.Context, exp any) error {
 	_, err = s.db.ExecContext(ctx, `
 		INSERT INTO experiences (id, trip_id, note_spans, location, foods, sentiment, uncertainty)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			trip_id = excluded.trip_id,
+			note_spans = excluded.note_spans,
+			location = excluded.location,
+			foods = excluded.foods,
+			sentiment = excluded.sentiment,
+			uncertainty = excluded.uncertainty
 	`, flat.ID, flat.TripID, string(flat.NoteSpans), flat.Location,
 		string(flat.Foods), flat.Sentiment, string(flat.Uncertainty))
 	return err

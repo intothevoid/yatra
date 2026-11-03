@@ -3,7 +3,10 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -18,11 +21,11 @@ import (
 
 // App holds all dependencies for HTTP handlers.
 type App struct {
-	cfg       *config.Config
-	store     *store.Store
-	importer  *services.Importer
-	genie     *services.Genie
-	exporter  *services.GhostExporter
+	cfg      *config.Config
+	store    *store.Store
+	importer *services.Importer
+	genie    *services.Genie
+	exporter *services.GhostExporter
 }
 
 // NewApp creates a new application.
@@ -45,15 +48,21 @@ func (a *App) Router() http.Handler {
 
 	r.Get("/health/live", a.healthLive)
 	r.Get("/health/ready", a.healthReady)
+	r.Get("/api/v1/settings", a.publicSettings)
 
 	r.Get("/api/v1/trips", a.listTrips)
+	r.Delete("/api/v1/trips/{id}", a.deleteTrip)
 	r.Post("/api/v1/trips/import-path", a.importTrip)
 	r.Get("/api/v1/trips/{id}", a.getTrip)
+	r.Put("/api/v1/trips/{id}/feature-photo", a.setFeaturePhoto)
 	r.Post("/api/v1/trips/{id}/analyse", a.analyseTrip)
 
 	r.Get("/api/v1/trips/{id}/photos", a.listPhotos)
+	r.Post("/api/v1/trips/{id}/photos/select-all", a.selectAllPhotos)
+	r.Get("/api/v1/photos/{photoId}/thumbnail", a.photoThumbnail)
 	r.Patch("/api/v1/trips/{id}/photos/{photoId}", a.updatePhotoSelection)
 	r.Post("/api/v1/trips/{id}/photos/approve", a.approvePhotos)
+	r.Post("/api/v1/trips/{id}/generate", a.generateArticle)
 
 	r.Get("/api/v1/articles/{id}", a.getArticle)
 	r.Put("/api/v1/articles/{id}", a.updateArticle)
@@ -70,8 +79,20 @@ func (a *App) Router() http.Handler {
 	progressHandler.Register(r)
 	pageHandler := NewPageHandler(a.cfg, a.store, a.importer, a.genie)
 	pageHandler.Register(r)
+	staticFS, _ := fs.Sub(templates, "static")
+	r.Handle("/assets/*", http.FileServer(http.FS(staticFS)))
+	r.Handle("/vite.svg", http.FileServer(http.FS(staticFS)))
 
 	return r
+}
+
+func (a *App) publicSettings(w http.ResponseWriter, r *http.Request) {
+	maxUploadFiles := a.cfg.MaxUploadFiles
+	if maxUploadFiles <= 0 {
+		maxUploadFiles = 200
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]int{"max_upload_files": maxUploadFiles})
 }
 
 // healthLive returns 200 if the process is running.
@@ -102,6 +123,34 @@ func (a *App) listTrips(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(trips)
+}
+
+func (a *App) deleteTrip(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if filepath.Base(id) != id || id == "." || id == ".." {
+		http.Error(w, "invalid trip id", http.StatusBadRequest)
+		return
+	}
+	if _, err := a.store.Trips.Get(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := a.store.Trips.Delete(r.Context(), id); err != nil {
+		if err.Error() == "trip has an active job" {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(apiErr("trip_busy", err.Error()))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("delete_failed", err.Error()))
+		return
+	}
+	if err := os.RemoveAll(filepath.Join(a.cfg.DataDir, "assets", id)); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("asset_cleanup_failed", "trip deleted but its local photo files could not be fully removed"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // importTrip imports a trip from a server-side directory.
@@ -150,6 +199,34 @@ func (a *App) getTrip(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(trip)
 }
 
+func (a *App) setFeaturePhoto(w http.ResponseWriter, r *http.Request) {
+	tripID := chi.URLParam(r, "id")
+	if _, err := a.store.Trips.Get(r.Context(), tripID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	var req struct {
+		PhotoID string `json:"photo_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(apiErr("bad_request", "invalid JSON"))
+		return
+	}
+	if err := a.store.Trips.SetFeaturePhoto(r.Context(), tripID, req.PhotoID); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(apiErr("invalid_feature_photo", err.Error()))
+		return
+	}
+	trip, err := a.store.Trips.Get(r.Context(), tripID)
+	if err != nil {
+		http.Error(w, "could not reload trip", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(trip)
+}
+
 // analyseTrip queues analysis for a trip.
 func (a *App) analyseTrip(w http.ResponseWriter, r *http.Request) {
 	tripID := chi.URLParam(r, "id")
@@ -162,12 +239,7 @@ func (a *App) analyseTrip(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Queue analysis job
-	job := domain.Job{
-		ID:           fmt.Sprintf("job_%s_analyse", tripID),
-		Type:         domain.JobTypeAnalysePhoto,
-		TargetID:     tripID,
-		IdempotencyKey: tripID,
-	}
+	job := domain.Job{ID: fmt.Sprintf("job_%s_analyse_%d", tripID, time.Now().UnixNano()), Type: domain.JobTypeAnalysePhoto, TargetID: tripID}
 	if err := a.store.Jobs.Create(r.Context(), job); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
@@ -188,8 +260,49 @@ func (a *App) listPhotos(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
 		return
 	}
+	type photoView struct {
+		ID          string             `json:"id"`
+		Status      domain.PhotoStatus `json:"status"`
+		Thumbnail   string             `json:"thumbnail"`
+		Description string             `json:"description,omitempty"`
+	}
+	views := make([]photoView, 0, len(photos))
+	for _, p := range photos {
+		var description string
+		if p.VLMResult != "" {
+			var result domain.VisionResult
+			if json.Unmarshal([]byte(p.VLMResult), &result) == nil {
+				description = result.Observed.Description
+			}
+		}
+		views = append(views, photoView{ID: p.ID, Status: p.Status, Thumbnail: "/api/v1/photos/" + p.ID + "/thumbnail", Description: description})
+	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(photos)
+	json.NewEncoder(w).Encode(views)
+}
+
+func (a *App) photoThumbnail(w http.ResponseWriter, r *http.Request) {
+	photo, err := a.store.Photos.Get(r.Context(), chi.URLParam(r, "photoId"))
+	if err != nil || photo.ThumbnailPath == "" {
+		http.NotFound(w, r)
+		return
+	}
+	http.ServeFile(w, r, photo.ThumbnailPath)
+}
+
+func (a *App) selectAllPhotos(w http.ResponseWriter, r *http.Request) {
+	tripID := chi.URLParam(r, "id")
+	if _, err := a.store.Trips.Get(r.Context(), tripID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := a.store.Photos.SelectAllByTrip(r.Context(), tripID); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("selection_failed", err.Error()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprint(w, `{"ok":true}`)
 }
 
 // updatePhotoSelection changes a photo's selection status.
@@ -206,12 +319,39 @@ func (a *App) updatePhotoSelection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	trip, err := a.store.Trips.Get(r.Context(), tripID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	photos, err := a.store.Photos.GetByTrip(r.Context(), tripID)
+	if err != nil {
+		http.Error(w, "could not load trip photos", http.StatusInternalServerError)
+		return
+	}
+	belongs := false
+	for _, photo := range photos {
+		if photo.ID == photoID {
+			belongs = true
+			break
+		}
+	}
+	if !belongs {
+		http.NotFound(w, r)
+		return
+	}
 	if err := a.store.Photos.UpdateSelection(r.Context(), photoID, req.Status); err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
 		return
 	}
-	_ = tripID
+	if req.Status == domain.PhotoStatusNotSelected && trip.FeaturePhotoID == photoID {
+		if err := a.store.Trips.ClearFeaturePhotoIf(r.Context(), tripID, photoID); err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(apiErr("internal_error", err.Error()))
+			return
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"ok":true}`)
 }
@@ -219,6 +359,17 @@ func (a *App) updatePhotoSelection(w http.ResponseWriter, r *http.Request) {
 // approvePhotos approves the current photo selection.
 func (a *App) approvePhotos(w http.ResponseWriter, r *http.Request) {
 	tripID := chi.URLParam(r, "id")
+	trip, err := a.store.Trips.Get(r.Context(), tripID)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if trip.Status == domain.StatusImported {
+		if err := a.store.Trips.UpdateStatus(r.Context(), tripID, domain.StatusPhotoReview); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 
 	if err := a.store.Trips.UpdateStatus(r.Context(), tripID, domain.StatusPhotosApproved); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -227,6 +378,23 @@ func (a *App) approvePhotos(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, `{"ok":true}`)
+}
+
+func (a *App) generateArticle(w http.ResponseWriter, r *http.Request) {
+	tripID := chi.URLParam(r, "id")
+	if _, err := a.store.Trips.Get(r.Context(), tripID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	job := domain.Job{ID: fmt.Sprintf("job_%s_generate_%d", tripID, time.Now().UnixNano()), Type: domain.JobTypeGenerateStory, TargetID: tripID}
+	if err := a.store.Jobs.Create(r.Context(), job); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("job_create_failed", err.Error()))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	json.NewEncoder(w).Encode(map[string]string{"job_id": job.ID})
 }
 
 // getArticle returns the latest article revision.

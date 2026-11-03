@@ -83,3 +83,39 @@ func TestSomething(t *testing.T) {
 ## Continuous Integration
 
 Tests run on every commit. All tests must pass before merging.
+
+## Ghost rendering regression checks
+
+Run `npm ci` in `frontend` first, then from the repository root:
+
+```sh
+npm --prefix frontend test
+npm --prefix frontend run test:ghost:browser
+```
+
+The browser command uses an installed Google Chrome. Set
+`YATRA_CHROME_CHANNEL=chromium` if using a Playwright-managed Chromium instead.
+Go and Node are required; Node 24 is recommended by the Ghost test packages.
+
+These checks use synthetic data and do not require an LLM, API keys, Ghost, or
+photo uploads. They exercise the actual editor serialization and Go export
+function, then Ghost's official HTML importer and Lexical renderer. The fixture
+contains 11 photos (one header plus ten body images), the market and dinner
+headings, full width images, and four-photo groups. Checks assert every photo
+URL survives exactly once, headings survive editor save and both export paths,
+related photos stay in their section, and four-photo groups render as two rows
+of two. A negative test reproduces Ghost dropping galleries without dimensions.
+Go also tests the HTTP 422 fallback against a fake Ghost server.
+
+The browser test checks desktop (1440px) and phone (390px) rendering: all images
+load and have visible dimensions, headings are larger than body text, gallery
+rows align, and the document has no horizontal overflow. It writes an offline
+HTML preview and screenshots to `frontend/test-results/ghost-rendering/`, which
+is ignored by Git. Images in this report are labeled placeholders.
+
+To use the blog's public theme CSS instead of the basic test stylesheet, set
+`YATRA_GHOST_SCREEN_CSS` and `YATRA_GHOST_CARDS_CSS` to local copies of
+`/assets/built/screen.css` and `/public/cards.min.css` before the browser command.
+These tests verify pinned Ghost rendering packages, not the installed server's
+storage, theme templates, or image upload API. A live integration check remains
+useful when changing those components.

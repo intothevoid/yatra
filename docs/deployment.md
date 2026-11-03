@@ -46,7 +46,7 @@ cp .env.example .env
 |----------|-------------|---------|
 | `DATA_DIR` | Directory for SQLite DB and assets | `./data` |
 | `IMPORT_ROOTS` | Comma-separated import directories | `./imports` |
-| `OMLX_BASE_URL` | OMLX API base URL | `http://127.0.0.1:8000/v1` |
+| `OMLX_BASE_URL` | OMLX API base URL (Docker Desktop host address) | `http://host.docker.internal:8000/v1` |
 | `OMLX_API_KEY` | OMLX API key | (none) |
 | `OMLX_WRITER_MODEL` | Text model ID | `gemma-4-e4b-it-4bit` |
 
@@ -59,7 +59,7 @@ cp .env.example .env
 | `GHOST_ADMIN_API_KEY` | Ghost Admin API key | (none) |
 | `MAX_FILE_SIZE_MB` | Max upload file size (MB) | `50` |
 | `MAX_UPLOAD_SIZE_MB` | Max total upload size (MB) | `500` |
-| `MAX_UPLOAD_FILES` | Max files per upload | `200` |
+| `MAX_UPLOAD_FILES` | Max photos per browser upload | `200` |
 
 ## Security
 

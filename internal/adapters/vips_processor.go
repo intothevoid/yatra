@@ -2,15 +2,17 @@ package adapters
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // VipsProcessor calls vips CLI for image transformations.
 type VipsProcessor struct {
-	VipsPath    string
+	VipsPath      string
 	ThumbnailSize int
 	PreviewSize   int
 	ExportSize    int
@@ -45,11 +47,17 @@ func (a *VipsProcessor) resize(ctx context.Context, srcPath, destPath string, si
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, a.vipsCmd(), "resize", srcPath, destPath,
-		"--size", strconv.Itoa(size),
-		"--quality", strconv.Itoa(a.JPEGQuality),
+	// `thumbnail` scales the image to fit within the requested width and height
+	// while preserving its aspect ratio. Saver options belong on the output
+	// filename (for example, output.jpg[Q=85]), not as operation flags.
+	outputPath := fmt.Sprintf("%s[Q=%d]", destPath, a.JPEGQuality)
+	cmd := exec.CommandContext(ctx, a.vipsCmd(), "thumbnail", srcPath, outputPath,
+		strconv.Itoa(size), "--size", "down",
 	)
-	return cmd.Run()
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("vips thumbnail: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 // CanProcessHEIC checks if vips can read HEIC files.

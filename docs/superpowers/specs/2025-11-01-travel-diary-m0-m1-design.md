@@ -10,7 +10,7 @@ Build and validate (a) the architecture probes that prove the external integrati
 
 ## Goals
 
-- Probe OMLX vision support with real images from `~/Downloads/Nikon Zf Photos/` and record results in an ADR.
+- Probe OMLX vision support with local sample images and record results in an ADR.
 - Probe Ghost Admin API gallery support (native edit, single-image fallback).
 - Bootstrap a Go module with SQLite (entropy), fake services, and a minimal CLI/HTTP boundary.
 - Produce a runnable demo: `travel-diary run` imports ~5 real photos + a stubbed `story.txt`, analyses them, and writes an article with matching images.
@@ -64,7 +64,7 @@ Three approaches evaluated. Selected: **Approach B with probe run**.
 | Image library | Call `vips` CLI via adapter. | Spec allows either. CLI is more portable for Docker build. |
 | EXIF library | Call `exiftool` CLI via adapter. | Spec allows either. More portable than CGO bindings. |
 | Config | Config file (TOML or YAML) + env overrides. | Spec says env vars for secrets. Config file for service endpoints, concurrency, timeouts. |
-| Fixture data | 3 real JPEGs from `~/Downloads/Nikon Zf Photos/` (DSC_0089, DSC_0102, DSC_0105) | Real content gives real test value. |
+| Fixture data | 3 local sample JPEGs (`sample-1.jpg` through `sample-3.jpg`) | Real content gives real test value. |
 | Go module path | `github.com/karan/travel-diary` | Per GitHub conventions (repo `karan/travel-diary`). |
 | Fake server | Implement full `/v1/models` and `/v1/chat/completions` routes with configurable latency, failure modes, and schema-verified responses. | Allows testing timeout, 429, 5xx, partial responses, and cancellation — all listed in spec. |
 
@@ -72,7 +72,7 @@ Three approaches evaluated. Selected: **Approach B with probe run**.
 
 ### Probe phase
 
-1. **VLM probe** — Send three photos (DSC_0089, DSC_0102, DSC_0105) to `http://127.0.0.1:8000/v1/chat/completions` with image content part. Check: model name, JSON mode support, response schema, max tokens. Write ADR.
+1. **VLM probe** — Send three local sample photos to `http://127.0.0.1:8000/v1/chat/completions` with an image content part. Check: model name, JSON mode support, response schema, max tokens. Write ADR.
 2. **Ghost probe** — Create a draft with single image, test native gallery endpoint. Write ADR.
 3. **HEIC probe** — Search a few `.heic` images in the same folder, attempt conversion with libvips/CLI. Record status.
 

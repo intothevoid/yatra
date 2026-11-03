@@ -41,6 +41,12 @@ testdata/fixtures/*.heic
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+frontend/node_modules/
+frontend/dist/
+
+# Frontend production assets are generated into the Go server by Docker.
+internal/server/static/*
+!internal/server/static/placeholder.txt
 
 # Go workspace file
 go.work
@@ -54,3 +60,6 @@ linux_arm64.tar.gz
 windows_amd64.zip
 windows_arm64.zip
 
+
+# Local Ghost rendering reports and browser screenshots
+frontend/test-results/

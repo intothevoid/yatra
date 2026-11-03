@@ -3,6 +3,8 @@ package server
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -35,6 +37,115 @@ func NewUploadHandler(cfg *config.Config, s *store.Store, imp *services.Importer
 // Register routes on the chi router.
 func (h *UploadHandler) Register(r chi.Router) {
 	r.Post("/api/v1/trips/import-upload", h.handleUpload)
+	r.Post("/api/v1/trips/{tripId}/photos/upload", h.handleTripPhotoUpload)
+}
+
+func (h *UploadHandler) handleTripPhotoUpload(w http.ResponseWriter, r *http.Request) {
+	tripID := chi.URLParam(r, "tripId")
+	if filepath.Base(tripID) != tripID || tripID == "." || tripID == ".." {
+		writeUploadError(w, http.StatusBadRequest, "invalid_trip", "invalid trip id")
+		return
+	}
+	if _, err := h.store.Trips.Get(r.Context(), tripID); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	maxSize := h.cfg.MaxUploadSize
+	if maxSize == 0 {
+		maxSize = 500 << 20
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSize)
+	if err := r.ParseMultipartForm(maxSize); err != nil {
+		writeUploadError(w, http.StatusBadRequest, "upload_failed", "request too large: "+err.Error())
+		return
+	}
+	files := r.MultipartForm.File["files"]
+	if len(files) == 0 || len(files) > h.maxUploadFiles() {
+		writeUploadError(w, http.StatusBadRequest, "upload_failed", "choose between 1 and the configured maximum number of photos")
+		return
+	}
+	tripDir := filepath.Join(h.cfg.DataDir, "assets", tripID, "source")
+	if err := os.MkdirAll(tripDir, 0755); err != nil {
+		writeUploadError(w, http.StatusInternalServerError, "upload_failed", "could not prepare trip photo storage")
+		return
+	}
+	type uploaded struct {
+		URL      string `json:"url"`
+		FileName string `json:"fileName"`
+	}
+	results := make([]uploaded, 0, len(files))
+	var total int64
+	for _, fh := range files {
+		total += fh.Size
+	}
+	if total > maxSize {
+		writeUploadError(w, http.StatusBadRequest, "upload_failed", "total photo upload exceeds the configured size limit")
+		return
+	}
+	for _, fh := range files {
+		if fh.Size > h.cfg.MaxFileSize {
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", fmt.Sprintf("photo %s exceeds the per-file size limit", sanitizeFilename(fh.Filename)))
+			return
+		}
+		f, err := fh.Open()
+		if err != nil {
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", "could not read an uploaded photo")
+			return
+		}
+		header := make([]byte, 512)
+		_, readErr := io.ReadFull(f, header)
+		if readErr != nil && readErr != io.ErrUnexpectedEOF {
+			f.Close()
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", "could not inspect an uploaded photo")
+			return
+		}
+		if !domain.SupportedImageMIMEs[detectUploadMIME(header)] {
+			f.Close()
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", "only supported image files can be added")
+			return
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			f.Close()
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", "could not read an uploaded photo")
+			return
+		}
+		name := sanitizeFilename(fh.Filename)
+		if name == "" {
+			f.Close()
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", "an uploaded photo has an invalid filename")
+			return
+		}
+		destPath := uniqueUploadPath(tripDir, name)
+		dest, err := os.Create(destPath)
+		if err != nil {
+			f.Close()
+			writeUploadError(w, http.StatusInternalServerError, "upload_failed", "could not save an uploaded photo")
+			return
+		}
+		hash := sha256.New()
+		_, copyErr := io.Copy(io.MultiWriter(dest, hash), io.LimitReader(f, h.cfg.MaxFileSize+1))
+		dest.Close()
+		f.Close()
+		if copyErr != nil {
+			writeUploadError(w, http.StatusInternalServerError, "upload_failed", "could not save an uploaded photo")
+			return
+		}
+		photoID := "p_" + hex.EncodeToString(hash.Sum(nil))
+		results = append(results, uploaded{URL: "/api/v1/photos/" + photoID + "/thumbnail", FileName: fh.Filename})
+	}
+	if err := h.importer.ImportUploadedPhotos(r.Context(), tripID, tripDir); err != nil {
+		writeUploadError(w, http.StatusInternalServerError, "upload_failed", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]any{"uploads": results})
+}
+
+func writeUploadError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(apiErr(code, message))
 }
 
 // handleUpload accepts multipart form data with files or a single zip archive.
@@ -70,9 +181,9 @@ func (h *UploadHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(files) > h.cfg.MaxUploadFiles {
+	if len(files) > h.maxUploadFiles() {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(apiErr("upload_failed", fmt.Sprintf("too many files: max %d", h.cfg.MaxUploadFiles)))
+		json.NewEncoder(w).Encode(apiErr("upload_failed", fmt.Sprintf("too many files: max %d", h.maxUploadFiles())))
 		return
 	}
 
@@ -81,6 +192,13 @@ func (h *UploadHandler) handleUpload(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(apiErr("upload_failed", err.Error()))
 		return
 	}
+}
+
+func (h *UploadHandler) maxUploadFiles() int {
+	if h.cfg.MaxUploadFiles <= 0 {
+		return 200
+	}
+	return h.cfg.MaxUploadFiles
 }
 
 // handleZipUpload extracts a zip archive and imports the trip.
@@ -123,7 +241,7 @@ func (h *UploadHandler) handleZipUpload(w http.ResponseWriter, r *http.Request, 
 
 	// Import the extracted directory
 	tripID := domain.GenerateTripID(tmpDir)
-	if err := h.importer.ImportTrip(r.Context(), tripID, tmpDir); err != nil {
+	if err := h.importer.ImportUploadedPhotos(r.Context(), tripID, tmpDir); err != nil {
 		return fmt.Errorf("import: %w", err)
 	}
 
@@ -165,8 +283,8 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 		}
 		f.Seek(0, 0)
 
-		mimeType := http.DetectContentType(buffer)
-		if !domain.SupportedImageMIMEs[mimeType] && mimeType != "text/plain" {
+		mimeType := detectUploadMIME(buffer)
+		if !domain.SupportedImageMIMEs[mimeType] {
 			f.Close()
 			return fmt.Errorf("file %s has unsupported type: %s", sanitizeFilename(fh.Filename), mimeType)
 		}
@@ -179,7 +297,7 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 		}
 
 		// Save to temp dir
-		destPath := filepath.Join(tmpDir, safeName)
+		destPath := uniqueUploadPath(tmpDir, safeName)
 		dest, err := os.Create(destPath)
 		if err != nil {
 			f.Close()
@@ -195,6 +313,18 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 		f.Close()
 	}
 
+	// Keep the entered notes alongside the originals during import. They are also
+	// persisted on the trip so generation still works after the upload temp folder
+	// is removed.
+	title := strings.TrimSpace(r.FormValue("title"))
+	location := strings.TrimSpace(r.FormValue("location"))
+	notes := strings.TrimSpace(r.FormValue("notes"))
+	if notes != "" {
+		if err := os.WriteFile(filepath.Join(tmpDir, "story.txt"), []byte(notes), 0600); err != nil {
+			return fmt.Errorf("save notes: %w", err)
+		}
+	}
+
 	// Check total size
 	if totalSize > h.cfg.MaxUploadSize {
 		return fmt.Errorf("total upload size %d exceeds limit %d", totalSize, h.cfg.MaxUploadSize)
@@ -202,14 +332,51 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 
 	// Import
 	tripID := domain.GenerateTripID(tmpDir)
-	if err := h.importer.ImportTrip(r.Context(), tripID, tmpDir); err != nil {
+	if err := h.importer.ImportUploadedPhotos(r.Context(), tripID, tmpDir); err != nil {
 		return fmt.Errorf("import: %w", err)
+	}
+	trip, err := h.store.Trips.Get(r.Context(), tripID)
+	if err != nil {
+		return fmt.Errorf("load imported trip: %w", err)
+	}
+	if title != "" {
+		trip.Name = title
+	}
+	trip.Location = location
+	trip.Notes = notes
+	if err := h.store.Trips.Save(r.Context(), *trip); err != nil {
+		return fmt.Errorf("save trip details: %w", err)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"trip_id": tripID})
 	return nil
+}
+
+func detectUploadMIME(header []byte) string {
+	if len(header) >= 12 && string(header[4:8]) == "ftyp" {
+		brand := string(header[8:12])
+		if brand == "heic" || brand == "heix" || brand == "hevc" || brand == "hevx" || brand == "mif1" || brand == "msf1" {
+			return "image/heic"
+		}
+	}
+	return http.DetectContentType(header)
+}
+
+func uniqueUploadPath(dir, name string) string {
+	path := filepath.Join(dir, name)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return path
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	for i := 2; ; i++ {
+		candidate := filepath.Join(dir, fmt.Sprintf("%s (%d)%s", stem, i, ext))
+		if _, err := os.Stat(candidate); os.IsNotExist(err) {
+			return candidate
+		}
+	}
 }
 
 // validateZip checks zip contents for security issues.

@@ -18,9 +18,9 @@ import (
 
 // Importer handles trip import from a server-side directory.
 type Importer struct {
-	cfg     *config.Config
-	store   *store.Store
-	proc    adapters.ImageProcessor
+	cfg   *config.Config
+	store *store.Store
+	proc  adapters.ImageProcessor
 }
 
 // New creates a new importer.
@@ -35,6 +35,16 @@ func (i *Importer) ImportTrip(ctx context.Context, tripID, sourcePath string) er
 	if !i.cfg.IsPathAllowed(sourcePath) {
 		return fmt.Errorf("path not allowed: %s", sourcePath)
 	}
+	return i.importTrip(ctx, tripID, sourcePath)
+}
+
+// ImportUploadedPhotos imports files saved by the browser upload handler
+// into a trip's private data directory.
+func (i *Importer) ImportUploadedPhotos(ctx context.Context, tripID, sourcePath string) error {
+	return i.importTrip(ctx, tripID, sourcePath)
+}
+
+func (i *Importer) importTrip(ctx context.Context, tripID, sourcePath string) error {
 
 	// Read notes file if present
 	notesPath := filepath.Join(sourcePath, "story.txt")
@@ -55,6 +65,16 @@ func (i *Importer) ImportTrip(ctx context.Context, tripID, sourcePath string) er
 		SourcePath: sourcePath,
 		NotesHash:  notesHash,
 		Status:     domain.StatusImported,
+	}
+	if existing, err := i.store.Trips.Get(ctx, tripID); err == nil {
+		trip.Name = existing.Name
+		trip.Location = existing.Location
+		trip.Notes = existing.Notes
+		trip.FeaturePhotoID = existing.FeaturePhotoID
+		trip.Status = existing.Status
+		if trip.NotesHash == "" {
+			trip.NotesHash = existing.NotesHash
+		}
 	}
 	if err := i.store.Trips.Save(ctx, trip); err != nil {
 		return fmt.Errorf("save trip: %w", err)
@@ -116,16 +136,19 @@ func (i *Importer) ImportTrip(ctx context.Context, tripID, sourcePath string) er
 			}
 
 			// Generate thumbnail
-			thumbPath := filepath.Join(i.cfg.DataDir, "assets", tripID, "thumb", name)
-			if err := i.proc.GenerateThumbnail(ctx, path, thumbPath); err == nil {
-				photo.ThumbnailPath = thumbPath
+			thumbName := derivativeName(name)
+			thumbPath := filepath.Join(i.cfg.DataDir, "assets", tripID, "thumb", thumbName)
+			if err := i.proc.GenerateThumbnail(ctx, path, thumbPath); err != nil {
+				return fmt.Errorf("generate thumbnail for %s: %w", name, err)
 			}
+			photo.ThumbnailPath = thumbPath
 
 			// Generate preview
-			previewPath := filepath.Join(i.cfg.DataDir, "assets", tripID, "preview", name)
-			if err := i.proc.GeneratePreview(ctx, path, previewPath); err == nil {
-				photo.PreviewPath = previewPath
+			previewPath := filepath.Join(i.cfg.DataDir, "assets", tripID, "preview", derivativeName(name))
+			if err := i.proc.GeneratePreview(ctx, path, previewPath); err != nil {
+				return fmt.Errorf("generate preview for %s: %w", name, err)
 			}
+			photo.PreviewPath = previewPath
 
 			if err := i.store.Photos.Upsert(ctx, photo); err != nil {
 				return fmt.Errorf("save photo %s: %w", name, err)
@@ -134,6 +157,16 @@ func (i *Importer) ImportTrip(ctx context.Context, tripID, sourcePath string) er
 	}
 
 	return nil
+}
+
+// derivativeName keeps JPEG filenames as-is and gives other source formats a
+// JPEG suffix because VipsProcessor writes browser-compatible JPEG derivatives.
+func derivativeName(name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
+	if ext == ".jpg" || ext == ".jpeg" {
+		return name
+	}
+	return name + ".jpg"
 }
 
 func hashFile(path string) (string, int64, error) {

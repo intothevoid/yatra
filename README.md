@@ -1,6 +1,6 @@
 # yatra
 
-A travel diary AI that turns your photos into a blog post, powered by Ghost CMS and LLMs.
+A travel diary that turns your photos into a blog post, powered by Ghost CMS and LLMs.
 
 ## What it does
 
@@ -17,20 +17,16 @@ A travel diary AI that turns your photos into a blog post, powered by Ghost CMS 
 ```bash
 # 1. Copy and configure the environment
 cp .env.example .env
-# Edit .env — set your OMLX_API_KEY and optionally OMLX_BASE_URL
+# Edit .env — set OMLX_API_KEY, OMLX_BASE_URL, and OMLX_WRITER_MODEL
 
-# 2. Prepare your trip folder
-mkdir -p trips/my-trip
-cp /path/to/photos/*.jpg trips/my-trip/
-# Optional: add trip descriptions (helps the AI)
-echo "Trip to Kyoto, March 2025" > trips/my-trip/story.txt
-
-# 3. Start with Docker
+# 2. Start with Docker
 docker compose up --build -d
 
-# 4. Open the UI
+# 3. Open the UI on this computer
 open http://localhost:8080
 ```
+
+To use it from a phone on the same Wi-Fi, open `http://<computer-ip>:8080` in the phone browser. The computer's firewall must allow connections on port 8080.
 
 ### Configuration
 
@@ -40,9 +36,13 @@ Copy `.env.example` to `.env` and edit these values:
 |---|---|---|
 | `DATA_DIR` | SQLite DB + generated assets | `./data` (local) or `/data` (Docker) |
 | `IMPORT_ROOTS` | Allowed source directories (comma-separated) | `./imports` (local) or `/imports` (Docker) |
-| `OMLX_BASE_URL` | OpenAI-compatible API endpoint | `http://localhost:8000/v1` |
+| `OMLX_BASE_URL` | OpenAI-compatible API endpoint; use the Docker host address for Compose | `http://host.docker.internal:8000/v1` |
 | `OMLX_API_KEY` | Your API key (required for article generation) | `your-key-here` |
 | `OMLX_WRITER_MODEL` | Model for writing articles | `gemma-4-e4b-it-4bit` |
+| `OMLX_VISION_MODEL` | Optional vision model; defaults to `OMLX_WRITER_MODEL` | `llava` |
+| `LOCATION_WEB_SEARCH` | Search the web for destination context (disabled by default) | `false` |
+| `BRAVE_SEARCH_API_KEY` | Required when location web search is enabled | `your-key-here` |
+| `MAX_UPLOAD_FILES` | Maximum photos allowed in one browser upload | `200` |
 | `PORT` | Server port | `8080` |
 
 ### Using with Docker
@@ -52,9 +52,9 @@ The Docker setup maps these directories:
 | Host → Container | Purpose |
 |---|---|
 | `./data` → `/data` | SQLite database and generated assets |
-| `./trips` → `/imports:ro` | Your source photos (read-only) |
+| `./trips` → `/imports:ro` | Optional server-side source folders |
 
-When importing through the UI, use the **container path**:
+The browser workflow uploads selected photos directly, so it does not need a mounted source folder. The optional path-import API uses the **container path**:
 
 ```
 Source path: /imports/my-trip
@@ -64,49 +64,16 @@ This maps to your local folder `trips/my-trip`.
 
 ## Workflow
 
-### Step 1 — Import
+### Create and edit a post
 
-On the home page, enter the source path and click **Import Trip**.
+1. Enter a title, destination, and the details you remember.
+2. Choose multiple photos from the device. The app uploads them and prepares thumbnails.
+3. Describe the photos, then select or deselect images in the review grid.
+4. Generate a first-person draft. Generation runs in the background and reports progress.
+5. Edit the draft in the Ghost Koenig editor. Changes save automatically and the editor works in desktop and mobile browsers.
+6. Choose **Send draft to Ghost** when you are ready. The app creates a Ghost draft; it does not publish the post.
 
-- The importer copies photos to `data/assets/{trip_id}/source/`
-- Extracts EXIF metadata (date, location, camera)
-- Reads `story.txt` if present (used by the AI for article generation)
-- Creates a trip record with status `IMPORTED`
-
-### Step 2 — Analyse
-
-Click **Analyse Photos** on the trip page. The system:
-
-1. Generates thumbnails (400px default) and previews (1200px default)
-2. Sends each photo to a VLM (Vision Language Model) for description
-3. Extracts text from signs, labels, and signage (via Tesseract)
-4. Sets the trip status to `PHOTO_REVIEW`
-
-### Step 3 — Rank
-
-Click **Rank Photos**. The system:
-
-1. Scores each photo based on VLM descriptions, metadata, and quality
-2. Selects the top N photos (configurable; default is 50)
-3. Sets the trip status to `PHOTOS_APPROVED`
-
-### Step 4 — Generate Article
-
-Click **Generate Article** (requires `OMLX_API_KEY`). The system:
-
-1. Combines VLM descriptions, metadata, and your notes
-2. Invokes the LLM to write a full travel article with structure
-3. Extracts "experiences" (events, locations, foods) from your notes
-4. Sets the trip status to `EDITING`
-
-### Step 5 — Edit
-
-A link like **Edit Article** appears when status = `EDITING`. You can:
-
-- Edit any block (paragraph, heading, image)
-- Move blocks up or down
-- Delete blocks
-- Save changes (stored as new revisions)
+When `LOCATION_WEB_SEARCH=false`, the configured writer model supplies general destination context. Web search is optional; enable it with `LOCATION_WEB_SEARCH=true` and provide a Brave Search API key. Search result sources are shown with the draft's destination notes.
 
 ### Status progression
 

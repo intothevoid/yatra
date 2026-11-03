@@ -15,18 +15,18 @@ import (
 	"github.com/karan/travel-diary/internal/store"
 )
 
-//go:embed templates/*.html
+//go:embed templates/*.html static
 var templates embed.FS
 
 // PageHandler serves HTMX page fragments.
 type PageHandler struct {
-	cfg      *config.Config
-	store    *store.Store
-	importer *services.Importer
-	genie    *services.Genie
+	cfg       *config.Config
+	store     *store.Store
+	importer  *services.Importer
+	genie     *services.Genie
 	clusterer *services.Clusterer
-	ranker  *services.Ranker
-	tmpl    *template.Template
+	ranker    *services.Ranker
+	tmpl      *template.Template
 }
 
 // NewPageHandler creates a new page handler.
@@ -71,7 +71,13 @@ func (h *PageHandler) Register(r chi.Router) {
 }
 
 func (h *PageHandler) index(w http.ResponseWriter, r *http.Request) {
-	h.tmpl.ExecuteTemplate(w, "index", nil)
+	static, err := templates.ReadFile("static/index.html")
+	if err != nil {
+		http.Error(w, "frontend not built", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(static)
 }
 
 func (h *PageHandler) listTrips(w http.ResponseWriter, r *http.Request) {

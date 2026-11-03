@@ -22,6 +22,11 @@ type Config struct {
 	OMLXConcurrency int
 	OMLXAPIKey      string // from env only
 
+	// Optional destination research. Disabled by default. When enabled, Brave Search
+	// supplies source snippets to the writer model (the browser never sees the key).
+	LocationWebSearch bool
+	BraveSearchAPIKey string
+
 	// Server settings.
 	Port     int
 	LogLevel string
@@ -37,33 +42,35 @@ type Config struct {
 	GhostAPIKey string // from env only
 
 	// Upload limits.
-	MaxFileSize   int64 // default 50MB
-	MaxUploadSize int64 // default 500MB
-	MaxUploadFiles int  // default 200
+	MaxFileSize    int64 // default 50MB
+	MaxUploadSize  int64 // default 500MB
+	MaxUploadFiles int   // default 200
 }
 
 // LoadConfig reads configuration from environment variables.
 // In later milestones, this will also read from a config file.
 func LoadConfig() *Config {
 	cfg := &Config{
-		DataDir:         envOr("DATA_DIR", "./data"),
-		OMLXBaseURL:     envOr("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
-		OMLXVisionModel: envOr("OMLX_VISION_MODEL", ""),
-		OMLXWriterModel: envOr("OMLX_WRITER_MODEL", ""),
-		OMLXTimeoutSec:  envIntOr("OMLX_TIMEOUT_SEC", 180),
-		OMLXConcurrency: envIntOr("OMLX_CONCURRENCY", 1),
-		OMLXAPIKey:      os.Getenv("OMLX_API_KEY"),
-		Port:            envIntOr("PORT", 8080),
-		LogLevel:        envOr("LOG_LEVEL", "info"),
-		ThumbnailSize:   envIntOr("THUMBNAIL_SIZE", 400),
-		PreviewSize:     envIntOr("PREVIEW_SIZE", 1200),
-		ExportSize:      envIntOr("EXPORT_SIZE", 2560),
-		JPEGQuality:     envIntOr("JPEG_QUALITY", 85),
-		GhostURL:        envOr("GHOST_URL", ""),
-		GhostAPIKey:     os.Getenv("GHOST_ADMIN_API_KEY"),
-		MaxFileSize:     int64(envIntOr("MAX_FILE_SIZE_MB", 50)) << 20,
-		MaxUploadSize:   int64(envIntOr("MAX_UPLOAD_SIZE_MB", 500)) << 20,
-		MaxUploadFiles:  envIntOr("MAX_UPLOAD_FILES", 200),
+		DataDir:           envOr("DATA_DIR", "./data"),
+		OMLXBaseURL:       envOr("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
+		OMLXVisionModel:   envOr("OMLX_VISION_MODEL", ""),
+		OMLXWriterModel:   envOr("OMLX_WRITER_MODEL", ""),
+		OMLXTimeoutSec:    envIntOr("OMLX_TIMEOUT_SEC", 180),
+		OMLXConcurrency:   envIntOr("OMLX_CONCURRENCY", 1),
+		OMLXAPIKey:        os.Getenv("OMLX_API_KEY"),
+		LocationWebSearch: envBoolOr("LOCATION_WEB_SEARCH", false),
+		BraveSearchAPIKey: os.Getenv("BRAVE_SEARCH_API_KEY"),
+		Port:              envIntOr("PORT", 8080),
+		LogLevel:          envOr("LOG_LEVEL", "info"),
+		ThumbnailSize:     envIntOr("THUMBNAIL_SIZE", 400),
+		PreviewSize:       envIntOr("PREVIEW_SIZE", 1200),
+		ExportSize:        envIntOr("EXPORT_SIZE", 2560),
+		JPEGQuality:       envIntOr("JPEG_QUALITY", 85),
+		GhostURL:          envOr("GHOST_URL", ""),
+		GhostAPIKey:       os.Getenv("GHOST_ADMIN_API_KEY"),
+		MaxFileSize:       int64(envIntOr("MAX_FILE_SIZE_MB", 50)) << 20,
+		MaxUploadSize:     int64(envIntOr("MAX_UPLOAD_SIZE_MB", 500)) << 20,
+		MaxUploadFiles:    envIntOr("MAX_UPLOAD_FILES", 200),
 	}
 
 	// ImportRoots: comma-separated list from env, or default to ./imports
@@ -139,6 +146,14 @@ func envIntOr(key string, fallback int) int {
 		n = n*10 + int(r-'0')
 	}
 	return n
+}
+
+func envBoolOr(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	return v == "1" || v == "true" || v == "TRUE" || v == "yes" || v == "on"
 }
 
 func splitComma(s string) []string {

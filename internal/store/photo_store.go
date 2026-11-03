@@ -69,10 +69,10 @@ func (s *PhotoStore) Get(ctx context.Context, id string) (*domain.Photo, error) 
 // GetByTrip returns all photos for a trip.
 func (s *PhotoStore) GetByTrip(ctx context.Context, tripID string) ([]domain.Photo, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT p.id, p.source_file_id, p.exif, p.thumbnail_path, p.preview_path, p.export_path,
+		SELECT DISTINCT p.id, p.source_file_id, p.exif, p.thumbnail_path, p.preview_path, p.export_path,
 			p.vlm_result, p.status, p.ranking_reasons
 		FROM photos p
-		JOIN source_files sf ON p.source_file_id = sf.trip_id || '_' || sf.relative_path
+		JOIN source_files sf ON p.id = 'p_' || sf.sha256
 		WHERE sf.trip_id = ?
 	`, tripID)
 	if err != nil {
@@ -116,6 +116,18 @@ func (s *PhotoStore) UpdateSelection(ctx context.Context, photoID string, status
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE photos SET status = ? WHERE id = ?
 	`, status, photoID)
+	return err
+}
+
+// SelectAllByTrip marks every photo belonging to a trip as recommended in one
+// database statement, avoiding a burst of concurrent SQLite writes.
+func (s *PhotoStore) SelectAllByTrip(ctx context.Context, tripID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE photos SET status = ?
+		WHERE id IN (
+			SELECT 'p_' || sha256 FROM source_files WHERE trip_id = ?
+		)
+	`, domain.PhotoStatusRecommended, tripID)
 	return err
 }
 

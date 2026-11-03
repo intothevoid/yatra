@@ -19,6 +19,7 @@ func (s *ArticleStore) Save(ctx context.Context, tripID, title string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO articles (id, trip_id, status, title)
 		VALUES (?, ?, 'EDITING', ?)
+		ON CONFLICT(id) DO UPDATE SET title = excluded.title
 	`, "art_"+tripID, tripID, title)
 	return err
 }
@@ -29,7 +30,7 @@ func (s *ArticleStore) GetLatest(ctx context.Context, articleID string) (*domain
 	err := s.db.QueryRowContext(ctx, `
 		SELECT document FROM article_revisions
 		WHERE article_id = ?
-		ORDER BY created_at DESC LIMIT 1
+		ORDER BY created_at DESC, rowid DESC LIMIT 1
 	`, articleID).Scan(&docJSON)
 	if err != nil {
 		return nil, err
@@ -41,10 +42,19 @@ func (s *ArticleStore) GetLatest(ctx context.Context, articleID string) (*domain
 	return &doc, nil
 }
 
+func (s *ArticleStore) GetLatestRevisionID(ctx context.Context, articleID string) (string, error) {
+	var revisionID string
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id FROM article_revisions WHERE article_id = ?
+		ORDER BY created_at DESC, rowid DESC LIMIT 1
+	`, articleID).Scan(&revisionID)
+	return revisionID, err
+}
+
 // SaveRevision stores an immutable article revision.
 // rev.Document is already canonical JSON (a string).
 func (s *ArticleStore) SaveRevision(ctx context.Context, rev domain.ArticleRevision) error {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO article_revisions (id, article_id, author, reason, document, provenance, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -80,7 +90,7 @@ func (s *ArticleStore) ListRevisions(ctx context.Context, articleID string) ([]d
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, article_id, author, reason, document, provenance, created_at
 		FROM article_revisions WHERE article_id = ?
-		ORDER BY created_at DESC
+		ORDER BY created_at DESC, rowid DESC
 	`, articleID)
 	if err != nil {
 		return nil, err
