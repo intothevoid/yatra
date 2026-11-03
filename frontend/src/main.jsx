@@ -38,7 +38,7 @@ function initialLexical(article, photos) {
     }
     if (block.type === 'image' && block.photo_ids?.[0]) {
       const photo = photoByID.get(block.photo_ids[0]);
-      if (photo) children.push({ type: 'image', version: 1, src: photo.thumbnail, width: 1200, height: 800, alt: block.alt_text || '', caption: '', title: '', cardWidth: 'regular', href: '' });
+      if (photo) children.push({ type: 'image', version: 1, src: photo.thumbnail, width: 1200, height: 800, alt: block.alt_text || '', caption: block.caption || '', title: '', cardWidth: 'regular', href: '' });
     }
   }
   return { root: { type: 'root', version: 1, format: '', indent: 0, direction: null, children } };
@@ -57,7 +57,7 @@ function blocksFromLexical(state, oldBlocks) {
     }
     if (node.type === 'image') {
       const photoID = node.src?.match(/\/photos\/([^/]+)\/thumbnail/)?.[1];
-      if (photoID) content.push({ id: `edit_image_${id++}`, type: 'image', photo_ids: [photoID], alt_text: node.alt || '' });
+      if (photoID) content.push({ id: `edit_image_${id++}`, type: 'image', photo_ids: [photoID], alt_text: node.alt || '', caption: node.caption || '' });
       continue;
     }
     const text = (node.children || []).map((child) => child.text || '').join('');
@@ -89,6 +89,18 @@ function App() {
   const loadTrips = useCallback(async () => {
     setTrips((await api('/api/v1/trips')) || []);
   }, []);
+
+  const deleteTrip = async (event, item) => {
+    event.stopPropagation();
+    if (!window.confirm(`Delete “${item.name}” and its saved photos and draft from this app? This will not delete a draft already sent to Ghost.`)) return;
+    try {
+      await api(`/api/v1/trips/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
+      setTrips((items) => items.filter((tripItem) => tripItem.id !== item.id));
+      if (trip?.id === item.id) {
+        setTrip(null); setPhotos([]); setArticle(null); setScreen('home');
+      }
+    } catch (e) { setError(e.message); }
+  };
 
   const editorFileUploader = useMemo(() => ({
     fileTypes: { image: { mimeTypes: ['image/jpeg', 'image/png', 'image/heic', 'image/webp'], extensions: ['jpg', 'jpeg', 'png', 'heic', 'heif', 'webp'] } },
@@ -261,7 +273,7 @@ function App() {
             <button className="button button-primary full-button" disabled={busy || selectedFiles.length === 0}>{busy ? 'Preparing…' : `Upload ${selectedFiles.length || ''} ${selectedFiles.length === 1 ? 'photo' : 'photos'} and review`}</button>
           </form>
         </section>
-        {trips?.length > 0 && <section className="recent-section"><div className="section-title"><div><p className="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2>Your stories</h2></div></div><div className="trip-list">{trips.map((item) => <button key={item.id} className="trip-row" onClick={() => openTrip(item.id)}><span><strong>{item.name}</strong><small>{item.location || 'Travel story'} · {new Date(item.updated_at).toLocaleDateString()}</small></span><span className="trip-status">{item.status.toLowerCase().replaceAll('_', ' ')}</span><span className="arrow">→</span></button>)}</div></section>}
+        {trips?.length > 0 && <section className="recent-section"><div className="section-title"><div><p className="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2>Your stories</h2></div></div><div className="trip-list">{trips.map((item) => <div key={item.id} className="trip-row"><button className="trip-open-button" onClick={() => openTrip(item.id)}><span><strong>{item.name}</strong><small>{item.location || 'Travel story'} · {new Date(item.updated_at).toLocaleDateString()}</small></span><span className="trip-status">{item.status.toLowerCase().replaceAll('_', ' ')}</span><span className="arrow">→</span></button><button className="trip-delete-button" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={(event) => deleteTrip(event, item)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M8 5.5V3.8h4v1.7m-6.5 0 .8 10.7h7.4l.8-10.7M8.2 8.2v5.5m3.6-5.5v5.5" /></svg></button></div>)}</div></section>}
       </>}
 
       {screen === 'trip' && trip && <>

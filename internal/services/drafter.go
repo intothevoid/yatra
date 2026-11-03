@@ -77,28 +77,7 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 		}
 	}
 	if len(selectedPhotoIDs) > 0 {
-		galleryExists := false
-		for _, block := range blocks {
-			if block.Type == domain.BlockGallery {
-				galleryExists = true
-				break
-			}
-		}
-		if !galleryExists {
-			var galleries []domain.ArticleBlock
-			for start, galleryIndex := 0, 1; start < len(selectedPhotoIDs); start, galleryIndex = start+9, galleryIndex+1 {
-				end := min(start+9, len(selectedPhotoIDs))
-				galleries = append(galleries, domain.ArticleBlock{ID: fmt.Sprintf("trip_gallery_%d", galleryIndex), Type: domain.BlockGallery, PhotoIDs: selectedPhotoIDs[start:end], Caption: "A few moments from the trip"})
-			}
-			insertAt := len(blocks)
-			for i, block := range blocks {
-				if block.Type == domain.BlockParagraph {
-					insertAt = i + 1
-					break
-				}
-			}
-			blocks = append(blocks[:insertAt], append(galleries, blocks[insertAt:]...)...)
-		}
+		blocks = interleavePhotos(blocks, photos)
 	}
 
 	// Create article document
@@ -138,6 +117,102 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 	}
 
 	return doc, nil
+}
+
+// interleavePhotos places the lead photo before the introduction, then attaches
+// each remaining photo to the most relevant paragraph instead of collecting
+// every image in one gallery.
+func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo) []domain.ArticleBlock {
+	var selected []domain.Photo
+	for _, photo := range photos {
+		if photo.Status != domain.PhotoStatusNotSelected {
+			selected = append(selected, photo)
+		}
+	}
+	if len(selected) == 0 {
+		return blocks
+	}
+
+	lead := selected[0]
+	result := []domain.ArticleBlock{{ID: "trip_lead_photo", Type: domain.BlockImage, PhotoIDs: []string{lead.ID}, AltText: photoDescription(lead), Caption: photoDescription(lead)}}
+	if len(selected) == 1 {
+		return append(result, blocks...)
+	}
+
+	paragraphIndexes := make([]int, 0)
+	for i, block := range blocks {
+		if block.Type == domain.BlockParagraph {
+			paragraphIndexes = append(paragraphIndexes, i)
+		}
+	}
+	if len(paragraphIndexes) == 0 {
+		paragraphIndexes = []int{len(blocks) - 1}
+	}
+	assigned := make(map[int][]domain.Photo)
+	for photoIndex, photo := range selected[1:] {
+		description := photoDescription(photo)
+		bestIndex, bestScore := paragraphIndexes[photoIndex%len(paragraphIndexes)], -1.0
+		for _, blockIndex := range paragraphIndexes {
+			text := blocks[blockIndex].Text
+			if blockIndex > 0 && blocks[blockIndex-1].Type == domain.BlockHeading {
+				text = blocks[blockIndex-1].Text + " " + text
+			}
+			score := keywordOverlap(description, text) - float64(len(assigned[blockIndex]))*0.2
+			if score > bestScore {
+				bestScore, bestIndex = score, blockIndex
+			}
+		}
+		assigned[bestIndex] = append(assigned[bestIndex], photo)
+	}
+
+	imageID := 1
+	for i, block := range blocks {
+		result = append(result, block)
+		for _, photo := range assigned[i] {
+			description := photoDescription(photo)
+			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", imageID), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+			imageID++
+		}
+	}
+	if len(blocks) == 0 {
+		for i, photo := range selected[1:] {
+			description := photoDescription(photo)
+			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+		}
+	}
+	return result
+}
+
+func photoDescription(photo domain.Photo) string {
+	var result domain.VisionResult
+	if photo.VLMResult != "" && json.Unmarshal([]byte(photo.VLMResult), &result) == nil {
+		return strings.TrimSpace(result.Observed.Description)
+	}
+	return ""
+}
+
+func keywordOverlap(a, b string) float64 {
+	stop := map[string]bool{"the": true, "and": true, "with": true, "from": true, "that": true, "this": true, "there": true, "their": true, "about": true, "while": true, "were": true, "was": true, "are": true, "for": true, "you": true, "your": true, "photo": true, "image": true, "people": true}
+	words := func(value string) map[string]bool {
+		out := make(map[string]bool)
+		for _, word := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool { return !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) }) {
+			if len(word) > 2 && !stop[word] {
+				out[word] = true
+			}
+		}
+		return out
+	}
+	left, right := words(a), words(b)
+	if len(left) == 0 || len(right) == 0 {
+		return 0
+	}
+	overlap := 0
+	for word := range left {
+		if right[word] {
+			overlap++
+		}
+	}
+	return float64(overlap) / float64(len(left))
 }
 
 func (d *SectionDrafter) buildPrompt(trip *domain.Trip, experiences []store.Experience, matches []domain.PhotoMatch, photos []domain.Photo, research string) string {

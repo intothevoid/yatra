@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -49,6 +51,7 @@ func (a *App) Router() http.Handler {
 	r.Get("/api/v1/settings", a.publicSettings)
 
 	r.Get("/api/v1/trips", a.listTrips)
+	r.Delete("/api/v1/trips/{id}", a.deleteTrip)
 	r.Post("/api/v1/trips/import-path", a.importTrip)
 	r.Get("/api/v1/trips/{id}", a.getTrip)
 	r.Post("/api/v1/trips/{id}/analyse", a.analyseTrip)
@@ -119,6 +122,34 @@ func (a *App) listTrips(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(trips)
+}
+
+func (a *App) deleteTrip(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if filepath.Base(id) != id || id == "." || id == ".." {
+		http.Error(w, "invalid trip id", http.StatusBadRequest)
+		return
+	}
+	if _, err := a.store.Trips.Get(r.Context(), id); err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	if err := a.store.Trips.Delete(r.Context(), id); err != nil {
+		if err.Error() == "trip has an active job" {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(apiErr("trip_busy", err.Error()))
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("delete_failed", err.Error()))
+		return
+	}
+	if err := os.RemoveAll(filepath.Join(a.cfg.DataDir, "assets", id)); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(apiErr("asset_cleanup_failed", "trip deleted but its local photo files could not be fully removed"))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // importTrip imports a trip from a server-side directory.

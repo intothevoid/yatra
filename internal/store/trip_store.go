@@ -73,6 +73,35 @@ func (s *TripStore) List(ctx context.Context) ([]domain.Trip, error) {
 	return trips, rows.Err()
 }
 
+// Delete removes a trip and its dependent records. It refuses to delete while
+// work for the trip is queued or running.
+func (s *TripStore) Delete(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM jobs WHERE target_id = ? AND state IN ('queued', 'running', 'retry_wait')`, id).Scan(&active); err != nil {
+		return err
+	}
+	if active > 0 {
+		return fmt.Errorf("trip has an active job")
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM trips WHERE id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM jobs WHERE target_id = ?`, id); err != nil {
+		return err
+	}
+	// Photos are content-addressed and may be shared by multiple trips. Keep a
+	// photo record while any trip still references its source hash.
+	if _, err := tx.ExecContext(ctx, `DELETE FROM photos WHERE NOT EXISTS (SELECT 1 FROM source_files sf WHERE photos.id = 'p_' || sf.sha256)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // UpdateStatus changes a trip's status, validating the transition.
 func (s *TripStore) UpdateStatus(ctx context.Context, id string, newStatus domain.TripStatus) error {
 	trip, err := s.Get(ctx, id)

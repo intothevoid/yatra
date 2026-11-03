@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -222,7 +224,11 @@ func blocksToHTML(blocks []domain.ArticleBlock) string {
 			buf.WriteString(fmt.Sprintf("<p>%s</p>\n", escapeHTML(block.Text)))
 		case domain.BlockImage:
 			if len(block.PhotoIDs) > 0 {
-				buf.WriteString(fmt.Sprintf("<figure class=\"kg-card kg-image-card\"><img src=\"%s\" alt=\"%s\"></figure>\n", html.EscapeString(block.PhotoIDs[0]), escapeHTML(block.AltText)))
+				buf.WriteString(fmt.Sprintf("<figure class=\"kg-card kg-image-card\"><img src=\"%s\" alt=\"%s\">", html.EscapeString(block.PhotoIDs[0]), escapeHTML(block.AltText)))
+				if block.Caption != "" {
+					buf.WriteString(fmt.Sprintf("<figcaption>%s</figcaption>", escapeHTML(block.Caption)))
+				}
+				buf.WriteString("</figure>\n")
 			}
 		case domain.BlockGallery:
 			buf.WriteString("<figure class=\"kg-card kg-gallery-card kg-width-wide\"><div class=\"kg-gallery-container\">")
@@ -320,6 +326,17 @@ func (g *GhostClient) CreatePost(ctx context.Context, post *GhostPost) error {
 
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if post.Lexical != "" && resp.StatusCode == http.StatusUnprocessableEntity && bytes.Contains(body, []byte("Invalid lexical structure")) {
+			// Let Ghost convert the HTML rendering when a client editor document
+			// is incompatible with the installed Ghost release.
+			fallback := *post
+			fallback.Lexical = ""
+			if err := g.CreatePost(ctx, &fallback); err != nil {
+				return err
+			}
+			post.ID = fallback.ID
+			return nil
+		}
 		return fmt.Errorf("ghost API error %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -365,6 +382,11 @@ func (g *GhostClient) UpdatePost(ctx context.Context, post GhostPost) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		if post.Lexical != "" && resp.StatusCode == http.StatusUnprocessableEntity && bytes.Contains(body, []byte("Invalid lexical structure")) {
+			fallback := post
+			fallback.Lexical = ""
+			return g.UpdatePost(ctx, fallback)
+		}
 		return fmt.Errorf("ghost API error %d: %s", resp.StatusCode, string(body))
 	}
 	return nil
@@ -416,15 +438,37 @@ func (g *GhostClient) UploadImage(ctx context.Context, imagePath string) (string
 		return "", err
 	}
 	defer file.Close()
+	headerBytes := make([]byte, 512)
+	n, readErr := io.ReadFull(file, headerBytes)
+	if readErr != nil && readErr != io.ErrUnexpectedEOF {
+		return "", fmt.Errorf("read image header: %w", readErr)
+	}
+	contentType := http.DetectContentType(headerBytes[:n])
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", fmt.Errorf("rewind image: %w", err)
+	}
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("image", filepath.Base(imagePath))
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filepath.Base(imagePath)}))
+	partHeader.Set("Content-Type", contentType)
+	part, err := writer.CreatePart(partHeader)
 	if err != nil {
 		return "", err
 	}
-	io.Copy(part, file)
-	writer.Close()
+	if _, err := io.Copy(part, file); err != nil {
+		return "", err
+	}
+	if err := writer.WriteField("purpose", "image"); err != nil {
+		return "", err
+	}
+	if err := writer.WriteField("ref", filepath.Base(imagePath)); err != nil {
+		return "", err
+	}
+	if err := writer.Close(); err != nil {
+		return "", err
+	}
 
 	req, err := http.NewRequestWithContext(ctx, "POST", g.BaseURL+"/ghost/api/admin/images/upload/", body)
 	if err != nil {
