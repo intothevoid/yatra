@@ -28,8 +28,8 @@ func TestSourceFileIsSupportedImage(t *testing.T) {
 }
 
 func TestGenerateSourceFileID(t *testing.T) {
-	id := GenerateSourceFileID("trip_1", "DSC_0089.JPG")
-	if id != "trip_1_DSC_0089.JPG" {
-		t.Errorf("GenerateSourceFileID() = %q, want %q", id, "trip_1_DSC_0089.JPG")
+	id := GenerateSourceFileID("trip_1", "sample.jpg")
+	if id != "trip_1_sample.jpg" {
+		t.Errorf("GenerateSourceFileID() = %q, want %q", id, "trip_1_sample.jpg")
 	}
 }

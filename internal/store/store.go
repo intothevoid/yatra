@@ -12,11 +12,11 @@ import (
 
 // Store holds all database connections and sub-stores.
 type Store struct {
-	db        *sql.DB
-	Trips     *TripStore
-	Photos    *PhotoStore
-	Articles  *ArticleStore
-	Jobs      *JobStore
+	db       *sql.DB
+	Trips    *TripStore
+	Photos   *PhotoStore
+	Articles *ArticleStore
+	Jobs     *JobStore
 }
 
 // Open creates a new store in the given directory.
@@ -32,20 +32,30 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// This application runs one process against SQLite. A single pooled
+	// connection serializes the worker and request writes instead of letting
+	// them race for SQLite's one writer lock. The busy timeout also allows
+	// another process using the database to finish a short transaction.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	if _, err := db.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("configure sqlite busy timeout: %w", err)
+	}
 
 	// Run migrations
 	migrator := NewMigrator(db)
-	if err := migrator.MigrateTo(ctx, 2); err != nil {
+	if err := migrator.MigrateTo(ctx, 3); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
 	return &Store{
-		db:     db,
-		Trips:  &TripStore{db: db},
-		Photos: &PhotoStore{db: db},
+		db:       db,
+		Trips:    &TripStore{db: db},
+		Photos:   &PhotoStore{db: db},
 		Articles: &ArticleStore{db: db},
-		Jobs:   &JobStore{db: db},
+		Jobs:     &JobStore{db: db},
 	}, nil
 }
 

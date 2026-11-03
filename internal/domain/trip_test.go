@@ -33,8 +33,8 @@ func TestTripStatusTransitions(t *testing.T) {
 }
 
 func TestGenerateTripID(t *testing.T) {
-	id := GenerateTripID("/Users/karan/trips/Japan-2026")
-	if id != "trip__users_karan_trips_japan-2026" {
-		t.Errorf("GenerateTripID() = %q, want %q", id, "trip__users_karan_trips_japan-2026")
+	id := GenerateTripID("/Users/testuser/trips/Japan-2026")
+	if id != "trip__users_testuser_trips_japan-2026" {
+		t.Errorf("GenerateTripID() = %q, want %q", id, "trip__users_testuser_trips_japan-2026")
 	}
 }

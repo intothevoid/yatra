@@ -1,15 +1,13 @@
 # Travel Diary AI — Known Limitations
 
-## v1 Limitations
+## Current Limitations
 
 ### Vision Model
-- No VLM models currently loaded on OMLX server. Vision analysis uses a fake adapter that returns deterministic results.
-- To enable real vision analysis, load a vision-capable model (e.g., LLaVA, BakLLaVA) in OMLX.
+- Real photo analysis requires a vision-capable model configured in OMLX and selected with `OMLX_VISION_MODEL` (or `OMLX_WRITER_MODEL` as fallback).
+- If no API key/model is configured, the development fake adapters are used.
 
 ### Ghost Integration
-- JWT authentication implemented but not tested against a live Ghost instance (auth format may need adjustment).
-- Gallery cards use simple HTML divs; native Ghost gallery cards require Lexical JSON which is not yet implemented.
-- Image upload to Ghost implemented but not tested end-to-end.
+- Ghost Admin API authentication and draft creation still need end-to-end verification against the target Ghost site.
 
 ### Image Processing
 - HEIC support depends on `libheif` being installed. Not included in default Docker image.
@@ -17,9 +15,7 @@
 - No automatic image enhancement (sharpening, color correction).
 
 ### Editor
-- Block reordering (drag-and-drop) UI is present but not fully wired.
-- No inline formatting (bold, italic, links) — plain text only.
-- No image alt text editing in the gallery blocks.
+- The browser editor uses Ghost's Koenig editor. Image upload and gallery editing inside a saved article are still being refined.
 
 ### Writing
 - Style profile import from Ghost not tested (depends on Ghost integration).
@@ -28,11 +24,11 @@
 
 ### Performance
 - No caching of VLM responses (re-analyses on every run).
-- No concurrent photo processing (single worker).
-- No pagination for large photo sets.
+- Photo processing uses a single worker.
+- Photo grids are not paginated.
 
 ### Security
-- No authentication/authorization (assumes local/trusted network).
+- No authentication/authorization (assumes local/trusted network). The default Compose port binding makes the app reachable by devices on the host's network.
 - No rate limiting on API endpoints.
 - No CSRF protection (HTMX requests from same origin).
 

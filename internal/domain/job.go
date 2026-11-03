@@ -39,7 +39,7 @@ const (
 
 // Job types used by the application.
 const (
-	JobTypeAnalysePhoto = "analyse_photo"
+	JobTypeAnalysePhoto  = "analyse_photo"
 	JobTypeGenerateStory = "generate_story"
 	JobTypeCreatePreview = "create_preview"
 )

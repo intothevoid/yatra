@@ -5,7 +5,7 @@
 
 ## Context
 
-The sample folder `~/Downloads/Nikon Zf Photos/` contains 261 JPEG files. We need to verify whether the application's image processing stack (libvips + exiftool) can handle HEIC files.
+The local sample folder contains JPEG files. We need to verify whether the application's image processing stack (libvips + exiftool) can handle HEIC files.
 
 ## Decision
 

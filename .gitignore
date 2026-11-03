@@ -41,6 +41,12 @@ testdata/fixtures/*.heic
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
+frontend/node_modules/
+frontend/dist/
+
+# Frontend production assets are generated into the Go server by Docker.
+internal/server/static/*
+!internal/server/static/placeholder.txt
 
 # Go workspace file
 go.work

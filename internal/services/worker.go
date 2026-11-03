@@ -80,7 +80,7 @@ func (p *WorkerPool) workerLoop(ctx context.Context) {
 // processJob executes a job and updates its state.
 func (p *WorkerPool) processJob(ctx context.Context, job *domain.Job) {
 	if job.Type == domain.JobTypeAnalysePhoto {
-		if err := p.genie.AnalyseTrip(ctx, job.TargetID); err != nil {
+		if err := p.genie.AnalyseTripJob(ctx, job.TargetID, job.ID); err != nil {
 			p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
 				j.State = domain.JobStateFailed
 				j.Error = err.Error()
@@ -90,6 +90,25 @@ func (p *WorkerPool) processJob(ctx context.Context, job *domain.Job) {
 		p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
 			j.State = domain.JobStateSucceeded
 			j.Step = 1
+		})
+	}
+	if job.Type == domain.JobTypeGenerateStory {
+		p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
+			j.CurrentStep = "Researching the destination and writing your draft"
+			j.Progress = 10
+		})
+		if err := p.genie.GenerateArticle(ctx, job.TargetID); err != nil {
+			p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
+				j.State = domain.JobStateFailed
+				j.Error = err.Error()
+			})
+			return
+		}
+		p.store.Jobs.Update(ctx, job.ID, func(j *domain.Job) {
+			j.State = domain.JobStateSucceeded
+			j.Step = 1
+			j.Progress = 100
+			j.CurrentStep = "Draft ready"
 		})
 	}
 }

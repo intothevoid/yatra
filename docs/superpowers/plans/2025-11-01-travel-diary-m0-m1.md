@@ -6,7 +6,7 @@
 
 **Architecture:** Single Go binary with embedded HTTP server, one in-process worker, SQLite (modernc.org/sqlite) for persistence, adapter interfaces for extensible external services, full fake server that reproduces real behaviors including failure modes.
 
-**Tech Stack:** Go 1.22+, modernc.org/sqlite, chi (HTTP router), exiftool (CLI), vips (CLI), OMLX at `http://127.0.0.1:8000`, sample photos from `~/Downloads/Nikon Zf Photos/`.
+**Tech Stack:** Go 1.22+, modernc.org/sqlite, chi (HTTP router), exiftool (CLI), vips (CLI), OMLX at `http://127.0.0.1:8000`, local sample photos.
 
 **Spec:** `docs/superpowers/specs/2025-11-01-travel-diary-m0-m1-design.md` (which implements spec `travel-diary-ai-spec-v1.md`)
 
@@ -25,7 +25,7 @@
 1. **Path traversal in imports** — a malicious `../` in `import-path` must never read outside the configured allowlist; the handler returns 400 and logs a warning.
 2. **HEIC without codec** — when libvips or exiftool cannot decode HEIC, the importer records the file as `unsupported` without crashing; a status flag indicates which files couldn't be processed.
 3. **OMLX vision unavailability** — when the VLM is unreachable or reports no supported image model, the analysis job transitions to `failed` with an actionable error; completed photo metadata from EXIF is preserved.
-4. **Identical filenames from separate trips** — two trips each have a `DSC_0089.JPG`; content hashes must distinguish them, and the same file imported twice records a single `source_files` row with a count.
+4. **Identical filenames from separate trips** — two trips each have a `sample.jpg`; content hashes must distinguish them, and the same file imported twice records a single `source_files` row with a count.
 5. **Concurrent worker leases on crash** — if the server crashes mid-job, the next restart reclaims the lease; no duplicate analysis runs execute for the same photo.
 
 ---
@@ -37,11 +37,11 @@
 **Files:**
 - Write: `docs/decisions/001-omlx-vision-support.md` (results of probing `http://127.0.0.1:8000`)
 - Write: `docs/decisions/002-ghost-gallery-support.md` (results of probing `https://travel.karan.myds.me`)
-- Write: `docs/decisions/003-heic-support.md` (results of probing `~/Downloads/Nikon Zf Photos/` for HEIC support)
+- Write: `docs/decisions/003-heic-support.md` (results of probing local sample photos for HEIC support)
 
 **Interfaces:** N/A (no code produced).
 
-- [ ] **Step 1: Probe OMLX vision** — Send DSC_0089, DSC_0102, DSC_0105 (from `~/Downloads/Nikon Zf Photos/`) to `http://127.0.0.1:8000/v1/chat/completions` with image content part. Check: model name, JSON mode support, response schema, max tokens. Record results in 001.
+- [ ] **Step 1: Probe OMLX vision** — Send `sample-1.jpg`, `sample-2.jpg`, and `sample-3.jpg` to `http://127.0.0.1:8000/v1/chat/completions` with an image content part. Check: model name, JSON mode support, response schema, max tokens. Record results in 001.
   - (Run `curl -X POST http://127.0.0.1:8000/v1/models` to see available models.)
   - (Run `curl -X POST ...` with a base64-encoded preview of one photo to test image understanding.)
   - (Verify `/v1/chat/completions` accepts `response_format` with JSON Schema.)
@@ -49,7 +49,7 @@
 
 - [ ] **Step 2: Probe Ghost gallery** — Connect to `https://travel.karan.myds.me/ghost/api/admin`. Upload a test image (`POST /ghost/api/admin/images/upload/`). Create a draft with that image. Test whether native gallery endpoint exists (`POST /ghost/api/admin/posts/`). Record results in 002.
 
-- [ ] **Step 3: Probe HEIC support** — Search `~/Downloads/Nikon Zf Photos/` for `.heic` files. Attempt conversion with `vips` CLI: `vips DSC_xxx.HEIC DSC_xxx.jpg`. Record results in 003.
+- [ ] **Step 3: Probe HEIC support** — Search the local sample folder for `.heic` files. Attempt conversion with `vips` CLI. Record results in 003.
 
 - [ ] **Step 4: Write ADRs** — Create `docs/decisions/001-omlx-vision-support.md`, `002-ghost-gallery-support.md`, `003-heic-support.md` with concrete findings. Include fallback decisions based on results.
 
@@ -490,7 +490,7 @@ git commit -m "vertical slice: importer, worker pool, Genie, HTTP handlers"
 **Interfaces:**
 - Consumes: the complete vertical slice from Task 5.
 
-- [ ] **Step 1: Create test trip** — use 3 photos from `~/Downloads/Nikon Zf Photos/` + a stub `story.txt`.
+- [ ] **Step 1: Create test trip** — use 3 local sample photos + a stub `story.txt`.
 
 - [ ] **Step 2: Run end-to-end demo** — `go run ./cmd/travel-diary run --trip /path/to/test/trip`. Verify: Trip created, SourceFiles stored, photos analysed (VLM result), thumbnails created, article generated.
 

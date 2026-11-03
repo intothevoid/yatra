@@ -10,8 +10,8 @@ import (
 
 	"github.com/karan/travel-diary/internal/adapters"
 	"github.com/karan/travel-diary/internal/config"
-	"github.com/karan/travel-diary/internal/services"
 	"github.com/karan/travel-diary/internal/server"
+	"github.com/karan/travel-diary/internal/services"
 	"github.com/karan/travel-diary/internal/store"
 )
 
@@ -32,9 +32,25 @@ func main() {
 	defer s.Close()
 
 	// Create adapters
-	proc := adapters.FakeImageProcessor{}
-	vlm := &adapters.FakeVLMAdapter{}
-	text := adapters.FakeTextAdapter{}
+	proc := &adapters.SystemImageProcessor{
+		EXIF: &adapters.ExifToolAdapter{},
+		Vips: &adapters.VipsProcessor{ThumbnailSize: cfg.ThumbnailSize, PreviewSize: cfg.PreviewSize, ExportSize: cfg.ExportSize, JPEGQuality: cfg.JPEGQuality},
+	}
+	var vlm adapters.VLMAdapter = &adapters.FakeVLMAdapter{}
+	if cfg.OMLXAPIKey != "" {
+		visionModel := cfg.OMLXVisionModel
+		if visionModel == "" {
+			visionModel = cfg.OMLXWriterModel
+		}
+		if visionModel != "" {
+			vlm = adapters.NewOpenAIVisionAdapter(cfg)
+			vlm.(*adapters.OpenAIVisionAdapter).Model = visionModel
+		}
+	}
+	var text adapters.TextAdapter = adapters.FakeTextAdapter{}
+	if cfg.OMLXAPIKey != "" && cfg.OMLXWriterModel != "" {
+		text = adapters.NewOpenAITextAdapter(cfg)
+	}
 
 	// Create Ghost client if configured
 	var ghostClient *services.GhostClient

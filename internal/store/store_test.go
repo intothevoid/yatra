@@ -91,7 +91,7 @@ func TestSourceFileCRUD(t *testing.T) {
 	// Save source file
 	sf := domain.SourceFile{
 		TripID:       "t1",
-		RelativePath: "DSC_0089.JPG",
+		RelativePath: "sample.jpg",
 		MIME:         "image/jpeg",
 		Bytes:        17705934,
 		SHA256:       "abc123",
@@ -108,8 +108,8 @@ func TestSourceFileCRUD(t *testing.T) {
 	if len(files) != 1 {
 		t.Fatalf("ListSourceFiles: got %d files, want 1", len(files))
 	}
-	if files[0].RelativePath != "DSC_0089.JPG" {
-		t.Errorf("RelativePath = %q, want %q", files[0].RelativePath, "DSC_0089.JPG")
+	if files[0].RelativePath != "sample.jpg" {
+		t.Errorf("RelativePath = %q, want %q", files[0].RelativePath, "sample.jpg")
 	}
 }
 
@@ -119,7 +119,7 @@ func TestPhotoUpsert(t *testing.T) {
 
 	photo := domain.Photo{
 		ID:           "p1",
-		SourceFileID: "t1_DSC_0089.JPG",
+		SourceFileID: "t1_sample.jpg",
 		Status:       domain.PhotoStatusRecommended,
 		EXIF:         `{"make":"NIKON"}`,
 	}

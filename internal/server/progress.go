@@ -65,7 +65,7 @@ func (h *ProgressHandler) streamProgress(w http.ResponseWriter, r *http.Request)
 
 			data := map[string]any{
 				"state":    string(job.State),
-				"step":     job.Step,
+				"step":     job.CurrentStep,
 				"progress": job.Progress,
 			}
 			if job.Error != "" {

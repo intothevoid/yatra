@@ -50,14 +50,19 @@ func (e *EvidenceExtractor) Extract(ctx context.Context, tripID string) error {
 		return fmt.Errorf("get trip: %w", err)
 	}
 
-	notesPath := trip.SourcePath + "/story.txt"
-	notes, err := os.ReadFile(notesPath)
-	if err != nil {
-		return fmt.Errorf("read notes: %w", err)
+	notes := []byte(trip.Notes)
+	if trip.Notes == "" && trip.SourcePath != "" {
+		// Preserve compatibility with older folder imports that still have story.txt.
+		if b, readErr := os.ReadFile(trip.SourcePath + "/story.txt"); readErr == nil {
+			notes = b
+		}
 	}
 
 	// Parse line by line
 	experiences := e.parseLineByLine(string(notes))
+	if trip.Location != "" {
+		experiences = append([]Experience{{Location: trip.Location, NoteSpans: []Span{{Text: "Trip destination: " + trip.Location}}}}, experiences...)
+	}
 
 	// Store experiences
 	for i := range experiences {

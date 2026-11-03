@@ -18,13 +18,17 @@ type TripStore struct {
 func (s *TripStore) Save(ctx context.Context, trip domain.Trip) error {
 	now := time.Now().UTC().Format(time.RFC3339)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO trips (id, name, source_path, notes_hash, status, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO trips (id, name, source_path, notes_hash, status, created_at, updated_at, location, notes)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
+			source_path = excluded.source_path,
+			notes_hash = excluded.notes_hash,
+			location = excluded.location,
+			notes = excluded.notes,
 			status = excluded.status,
 			updated_at = excluded.updated_at
-	`, trip.ID, trip.Name, trip.SourcePath, trip.NotesHash, trip.Status, now, now)
+	`, trip.ID, trip.Name, trip.SourcePath, trip.NotesHash, trip.Status, now, now, trip.Location, trip.Notes)
 	return err
 }
 
@@ -33,9 +37,9 @@ func (s *TripStore) Get(ctx context.Context, id string) (*domain.Trip, error) {
 	var trip domain.Trip
 	var createdAt, updatedAt string
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, source_path, notes_hash, status, created_at, updated_at
+		SELECT id, name, source_path, notes_hash, status, created_at, updated_at, location, notes
 		FROM trips WHERE id = ?
-	`, id).Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt)
+	`, id).Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt, &trip.Location, &trip.Notes)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +51,7 @@ func (s *TripStore) Get(ctx context.Context, id string) (*domain.Trip, error) {
 // List returns all trips.
 func (s *TripStore) List(ctx context.Context) ([]domain.Trip, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, source_path, notes_hash, status, created_at, updated_at
+		SELECT id, name, source_path, notes_hash, status, created_at, updated_at, location, notes
 		FROM trips ORDER BY created_at DESC
 	`)
 	if err != nil {
@@ -59,7 +63,7 @@ func (s *TripStore) List(ctx context.Context) ([]domain.Trip, error) {
 	for rows.Next() {
 		var trip domain.Trip
 		var createdAt, updatedAt string
-		if err := rows.Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt); err != nil {
+		if err := rows.Scan(&trip.ID, &trip.Name, &trip.SourcePath, &trip.NotesHash, &trip.Status, &createdAt, &updatedAt, &trip.Location, &trip.Notes); err != nil {
 			return nil, err
 		}
 		trip.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
