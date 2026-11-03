@@ -63,3 +63,4 @@ windows_arm64.zip
 
 # Local Ghost rendering reports and browser screenshots
 frontend/test-results/
+.DS_Store
