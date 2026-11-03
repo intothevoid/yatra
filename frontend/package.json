@@ -5,7 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
-    "build": "vite build"
+    "build": "vite build",
+    "test": "node --test src/storyLayout.test.js scripts/ghost-rendering.test.js",
+    "test:ghost": "node --test scripts/ghost-rendering.test.js",
+    "test:ghost:browser": "YATRA_GHOST_BROWSER=1 node --test scripts/ghost-rendering.test.js"
   },
   "dependencies": {
     "@tryghost/koenig-lexical": "1.11.1",
@@ -13,7 +16,12 @@
     "react-dom": "^19.1.0"
   },
   "devDependencies": {
+    "@tryghost/kg-default-nodes": "2.2.6",
+    "@tryghost/kg-html-to-lexical": "1.4.3",
+    "@tryghost/kg-lexical-html-renderer": "1.5.2",
     "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "30.0.1",
+    "playwright-core": "1.58.2",
     "vite": "^6.3.5"
   }
 }

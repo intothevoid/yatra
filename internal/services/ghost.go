@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -119,6 +122,7 @@ type GhostTag struct {
 func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleDocument) (GhostPost, error) {
 	photoURLs := make(map[string]string)
 	photoDescriptions := make(map[string]string)
+	dimensions := make(map[string]image.Point)
 	photoIDs := []string{doc.FeaturePhotoID}
 	if doc.Lexical != "" {
 		for _, match := range regexp.MustCompile(`/api/v1/photos/(p_[^/]+)/thumbnail`).FindAllStringSubmatch(doc.Lexical, -1) {
@@ -149,48 +153,17 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 			return GhostPost{}, fmt.Errorf("upload photo %s: %w", photoID, err)
 		}
 		photoURLs[photoID] = remoteURL
+		if file, err := os.Open(path); err == nil {
+			if cfg, _, err := image.DecodeConfig(file); err == nil {
+				dimensions[remoteURL] = image.Pt(cfg.Width, cfg.Height)
+			}
+			file.Close()
+		}
 	}
 
-	var blocks []domain.ArticleBlock
-	for _, sourceBlock := range doc.Blocks {
-		if sourceBlock.Type == domain.BlockGallery {
-			// Expand legacy galleries so each image can carry its own description
-			// as a caption in the Ghost post.
-			for i, photoID := range sourceBlock.PhotoIDs {
-				description := photoDescriptions[photoID]
-				blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("ghost_gallery_image_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photoURLs[photoID]}, AltText: description, Caption: description})
-			}
-			continue
-		}
-		block := sourceBlock
-		block.PhotoIDs = append([]string(nil), sourceBlock.PhotoIDs...)
-		for j, photoID := range block.PhotoIDs {
-			if block.Type == domain.BlockImage {
-				if block.AltText == "" {
-					block.AltText = photoDescriptions[photoID]
-				}
-				if block.Caption == "" {
-					block.Caption = photoDescriptions[photoID]
-				}
-			}
-			block.PhotoIDs[j] = photoURLs[photoID]
-		}
-		blocks = append(blocks, block)
-	}
-	contentHTML := blocksToHTML(blocks)
-	var lexical string
-	if doc.Lexical != "" {
-		var state any
-		if err := json.Unmarshal([]byte(doc.Lexical), &state); err != nil {
-			return GhostPost{}, fmt.Errorf("parse editor document: %w", err)
-		}
-		state = enrichLexicalCaptions(state, photoDescriptions)
-		state = replacePhotoURLs(state, photoURLs)
-		data, err := json.Marshal(state)
-		if err != nil {
-			return GhostPost{}, fmt.Errorf("encode Ghost editor document: %w", err)
-		}
-		lexical = string(data)
+	contentHTML, lexical, err := renderGhostContent(doc, photoURLs, photoDescriptions, dimensions)
+	if err != nil {
+		return GhostPost{}, err
 	}
 
 	// Convert tags
@@ -211,6 +184,51 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 		FeatureImageCaption: photoDescriptions[doc.FeaturePhotoID],
 		Status:              "draft",
 	}, nil
+}
+
+func renderGhostContent(doc *domain.ArticleDocument, photoURLs, photoDescriptions map[string]string, dimensions map[string]image.Point) (string, string, error) {
+	var blocks []domain.ArticleBlock
+	for _, sourceBlock := range doc.Blocks {
+
+		block := sourceBlock
+		block.PhotoIDs = append([]string(nil), sourceBlock.PhotoIDs...)
+		block.PhotoCaptions = append([]string(nil), sourceBlock.PhotoCaptions...)
+		block.Caption = plainCaption(block.Caption)
+		for j, photoID := range block.PhotoIDs {
+			if block.Type == domain.BlockGallery {
+				if j >= len(block.PhotoCaptions) {
+					block.PhotoCaptions = append(block.PhotoCaptions, photoDescriptions[photoID])
+				}
+			}
+			if block.Type == domain.BlockImage {
+				if block.AltText == "" {
+					block.AltText = photoDescriptions[photoID]
+				}
+				if block.Caption == "" {
+					block.Caption = photoDescriptions[photoID]
+				}
+			}
+			block.PhotoIDs[j] = photoURLs[photoID]
+		}
+		blocks = append(blocks, block)
+	}
+	contentHTML := blocksToGhostHTML(blocks, dimensions)
+	var lexical string
+	if doc.Lexical != "" {
+		var state any
+		if err := json.Unmarshal([]byte(doc.Lexical), &state); err != nil {
+			return "", "", fmt.Errorf("parse editor document: %w", err)
+		}
+		state = enrichLexicalCaptions(state, photoDescriptions)
+		state = replacePhotoURLs(state, photoURLs)
+		data, err := json.Marshal(state)
+		if err != nil {
+			return "", "", fmt.Errorf("encode Ghost editor document: %w", err)
+		}
+		lexical = string(data)
+	}
+
+	return contentHTML, lexical, nil
 }
 
 func limitUTF16(value string, maxUnits int) string {
@@ -258,9 +276,17 @@ var lexicalPhotoURLPattern = regexp.MustCompile(`/api/v1/photos/(p_[^/]+)/thumbn
 func enrichLexicalCaptions(value any, descriptions map[string]string) any {
 	switch item := value.(type) {
 	case map[string]any:
-		if item["type"] == "heading" {
+		// Use core Lexical types supported by older Ghost installations too.
+		if item["type"] == "extended-heading" {
+			item["type"] = "heading"
+		}
+		if item["type"] == "extended-text" {
+			item["type"] = "text"
+		}
+		if item["type"] == "heading" || item["type"] == "paragraph" {
 			if children, ok := item["children"].([]any); ok {
 				if level := stripMarkdownHeading(children); level > 0 {
+					item["type"] = "heading"
 					item["tag"] = fmt.Sprintf("h%d", level)
 				}
 			}
@@ -280,6 +306,8 @@ func enrichLexicalCaptions(value any, descriptions map[string]string) any {
 			}
 			if description := descriptions[photoID]; description != "" {
 				caption, _ := item["caption"].(string)
+				caption = plainCaption(caption)
+				item["caption"] = caption
 				if strings.TrimSpace(caption) == "" {
 					item["caption"] = description
 				}
@@ -306,7 +334,7 @@ func stripMarkdownHeading(children []any) int {
 	for _, child := range children {
 		switch item := child.(type) {
 		case map[string]any:
-			if item["type"] == "text" {
+			if item["type"] == "text" || item["type"] == "extended-text" {
 				if text, ok := item["text"].(string); ok {
 					clean, level, marked := parseMarkdownHeading(text)
 					if marked {
@@ -329,7 +357,9 @@ func stripMarkdownHeading(children []any) int {
 	return 0
 }
 
-func blocksToHTML(blocks []domain.ArticleBlock) string {
+func blocksToHTML(blocks []domain.ArticleBlock) string { return blocksToGhostHTML(blocks, nil) }
+
+func blocksToGhostHTML(blocks []domain.ArticleBlock, dimensions map[string]image.Point) string {
 	var buf bytes.Buffer
 	for _, block := range blocks {
 		switch block.Type {
@@ -346,10 +376,18 @@ func blocksToHTML(blocks []domain.ArticleBlock) string {
 			}
 			buf.WriteString(fmt.Sprintf("<h%d>%s</h%d>\n", level, escapeHTML(text), level))
 		case domain.BlockParagraph:
-			buf.WriteString(fmt.Sprintf("<p>%s</p>\n", escapeHTML(block.Text)))
+			if text, level, marked := parseMarkdownHeading(block.Text); marked {
+				buf.WriteString(fmt.Sprintf("<h%d>%s</h%d>\n", level, escapeHTML(text), level))
+			} else {
+				buf.WriteString(fmt.Sprintf("<p>%s</p>\n", escapeHTML(block.Text)))
+			}
 		case domain.BlockImage:
 			if len(block.PhotoIDs) > 0 {
-				buf.WriteString(fmt.Sprintf("<figure class=\"kg-card kg-image-card\"><img src=\"%s\" alt=\"%s\">", html.EscapeString(block.PhotoIDs[0]), escapeHTML(block.AltText)))
+				widthClass := ""
+				if block.CardWidth == "full" {
+					widthClass = " kg-width-full"
+				}
+				buf.WriteString(fmt.Sprintf("<figure class=\"kg-card kg-image-card%s\"><img src=\"%s\" alt=\"%s\">", widthClass, html.EscapeString(block.PhotoIDs[0]), escapeHTML(block.AltText)))
 				if block.Caption != "" {
 					buf.WriteString(fmt.Sprintf("<figcaption>%s</figcaption>", escapeHTML(block.Caption)))
 				}
@@ -358,13 +396,21 @@ func blocksToHTML(blocks []domain.ArticleBlock) string {
 		case domain.BlockGallery:
 			buf.WriteString("<figure class=\"kg-card kg-gallery-card kg-width-wide\"><div class=\"kg-gallery-container\">")
 			for i, photoURL := range block.PhotoIDs {
-				if i%3 == 0 {
+				if i%2 == 0 {
 					if i > 0 {
 						buf.WriteString("</div>")
 					}
 					buf.WriteString("<div class=\"kg-gallery-row\">")
 				}
-				buf.WriteString(fmt.Sprintf("<div class=\"kg-gallery-image\"><img src=\"%s\" alt=\"\"></div>", html.EscapeString(photoURL)))
+				size := dimensions[photoURL]
+				if size.X <= 0 || size.Y <= 0 {
+					size = image.Pt(1200, 800)
+				}
+				alt := ""
+				if i < len(block.PhotoCaptions) {
+					alt = plainCaption(block.PhotoCaptions[i])
+				}
+				buf.WriteString(fmt.Sprintf("<div class=\"kg-gallery-image\"><img src=\"%s\" width=\"%d\" height=\"%d\" alt=\"%s\"></div>", html.EscapeString(photoURL), size.X, size.Y, escapeHTML(alt)))
 			}
 			if len(block.PhotoIDs) > 0 {
 				buf.WriteString("</div>")

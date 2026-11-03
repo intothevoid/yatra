@@ -60,3 +60,6 @@ linux_arm64.tar.gz
 windows_amd64.zip
 windows_arm64.zip
 
+
+# Local Ghost rendering reports and browser screenshots
+frontend/test-results/

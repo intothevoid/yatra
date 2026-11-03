@@ -144,7 +144,7 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 		}
 	}
 	if len(selected) == 0 {
-		return blocks
+		return storyPhotoLayout(blocks)
 	}
 	result := make([]domain.ArticleBlock, 0, len(blocks)+len(selected))
 
@@ -159,18 +159,24 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 			description := photoDescription(photo)
 			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
 		}
-		return blocks
+		return storyPhotoLayout(blocks)
 	}
 	assigned := make(map[int][]domain.Photo)
-	for photoIndex, photo := range selected[1:] {
+	for photoIndex, photo := range selected {
 		description := photoContext(photo)
-		bestIndex, bestScore := paragraphIndexes[photoIndex%len(paragraphIndexes)], -1.0
+		bestIndex, bestScore := paragraphIndexes[photoIndex%len(paragraphIndexes)], 0.0
 		for _, blockIndex := range paragraphIndexes {
 			text := blocks[blockIndex].Text
+			for previous := blockIndex - 1; previous >= 0; previous-- {
+				if blocks[previous].Type == domain.BlockHeading {
+					text = blocks[previous].Text + " " + text
+					break
+				}
+			}
 			if blockIndex > 0 && blocks[blockIndex-1].Type == domain.BlockHeading {
 				text = blocks[blockIndex-1].Text + " " + text
 			}
-			score := keywordOverlap(description, text) - float64(len(assigned[blockIndex]))*0.2
+			score := keywordOverlap(description, text)
 			if score > bestScore {
 				bestScore, bestIndex = score, blockIndex
 			}
@@ -188,12 +194,12 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 		}
 	}
 	if len(blocks) == 0 {
-		for i, photo := range selected[1:] {
+		for i, photo := range selected {
 			description := photoDescription(photo)
 			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
 		}
 	}
-	return result
+	return storyPhotoLayout(result)
 }
 
 func photoDescription(photo domain.Photo) string {
@@ -264,7 +270,7 @@ func (d *SectionDrafter) buildPrompt(trip *domain.Trip, experiences []store.Expe
 			}
 		}
 	}
-	sb.WriteString("Place each non-header photo immediately after the paragraph that discusses the subject shown in that photo. Add its marker on its own line: [[PHOTO:<exact photo ID>]]. A food photo belongs after the food paragraph, a beach photo after beach text, and so on. Use only IDs listed above; do not put markers in the prose. The app removes markers and turns them into captioned images.\n\n")
+	sb.WriteString("Use ## headings on separate lines with blank lines around them. Build each section around the subjects visible in its photos, grounding the prose in the supplied descriptions and notes. Group related photo markers together after the relevant passage rather than writing a separate paragraph for every photograph. Place each non-header photo immediately after the paragraph that discusses the subject shown in that photo. Add its marker on its own line: [[PHOTO:<exact photo ID>]]. A food photo belongs after the food paragraph, a beach photo after beach text, and so on. Use only IDs listed above; do not put markers in the prose. The app removes markers and turns them into captioned images.\n\n")
 	sb.WriteString("Experiences:\n")
 	for i, exp := range experiences {
 		// NoteSpans is JSON, extract first span text
@@ -320,6 +326,7 @@ func (d *SectionDrafter) parseBlocks(response string, matches []domain.PhotoMatc
 	placed := make(map[string]bool)
 
 	// Split by double newline for paragraphs
+	response = regexp.MustCompile(`(?m)^(#{1,6} +[^\n]+)\n`).ReplaceAllString(response, "$1\n\n")
 	paragraphs := strings.Split(response, "\n\n")
 	blockID := 1
 

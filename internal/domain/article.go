@@ -24,14 +24,16 @@ type ArticleDocument struct {
 
 // ArticleBlock is a typed content block in the article.
 type ArticleBlock struct {
-	ID          string   `json:"id"`
-	Type        string   `json:"type"` // "heading" | "paragraph" | "image" | "gallery" | "quote"
-	Text        string   `json:"text,omitempty"`
-	Level       int      `json:"level,omitempty"`        // for heading
-	PhotoIDs    []string `json:"photo_ids,omitempty"`    // for gallery
-	Caption     string   `json:"caption,omitempty"`      // for gallery
-	AltText     string   `json:"alt_text,omitempty"`     // for image
-	EvidenceIDs []string `json:"evidence_ids,omitempty"` // for paragraph
+	ID            string   `json:"id"`
+	Type          string   `json:"type"` // "heading" | "paragraph" | "image" | "gallery" | "quote"
+	Text          string   `json:"text,omitempty"`
+	Level         int      `json:"level,omitempty"`     // for heading
+	PhotoIDs      []string `json:"photo_ids,omitempty"` // for gallery
+	CardWidth     string   `json:"card_width,omitempty"`
+	PhotoCaptions []string `json:"photo_captions,omitempty"`
+	Caption       string   `json:"caption,omitempty"`      // for gallery
+	AltText       string   `json:"alt_text,omitempty"`     // for image
+	EvidenceIDs   []string `json:"evidence_ids,omitempty"` // for paragraph
 }
 
 // Block types from spec §8.
