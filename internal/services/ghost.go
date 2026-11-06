@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -30,8 +31,19 @@ import (
 
 // GhostExporter handles publishing articles to Ghost.
 type GhostExporter struct {
+	mu     sync.RWMutex
 	client *GhostClient
 	store  *store.Store
+}
+
+func (e *GhostExporter) Configure(url, key string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if url == "" || key == "" {
+		e.client = nil
+		return
+	}
+	e.client = NewGhostClient(url, key)
 }
 
 // NewGhostExporter creates a new exporter.
@@ -41,6 +53,8 @@ func NewGhostExporter(client *GhostClient, s *store.Store) *GhostExporter {
 
 // CreateDraft creates or updates a Ghost draft from an approved article.
 func (e *GhostExporter) CreateDraft(ctx context.Context, tripID string) error {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
 	if e.client == nil {
 		return fmt.Errorf("Ghost integration is not configured")
 	}

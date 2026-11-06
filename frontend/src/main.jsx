@@ -9,7 +9,7 @@ const api = async (path, options = {}) => {
   const response = await fetch(path, options);
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
-    try { message = (await response.json()).message || message; } catch { /* keep fallback */ }
+    try { const body = await response.text(); try { const parsed = JSON.parse(body); message = parsed.message || parsed.error || message; } catch { message = body.trim() || message; } } catch { /* keep fallback */ }
     throw new Error(message);
   }
   if (response.status === 204) return null;
@@ -18,6 +18,12 @@ const api = async (path, options = {}) => {
 
 
 function App() {
+  const [authInfo, setAuthInfo] = useState(null);
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [settings, setSettings] = useState(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [trips, setTrips] = useState([]);
   const [trip, setTrip] = useState(null);
   const [photos, setPhotos] = useState([]);
@@ -88,8 +94,28 @@ function App() {
     stream.onerror = () => { stream.close(); reject(new Error('Lost the progress connection. The job may still be running; refresh this trip to check.')); };
   });
 
-  useEffect(() => { loadTrips().catch((e) => setError(e.message)); }, [loadTrips]);
-  useEffect(() => { api('/api/v1/settings').then((settings) => { if (settings.max_upload_files > 0) setMaxUploadFiles(settings.max_upload_files); }).catch(() => {}); }, []);
+  const refreshAuth = useCallback(async () => setAuthInfo(await api('/api/v1/auth/status')), []);
+  const loadSettings = async () => {
+    const value = await api('/api/v1/settings');
+    setSettings(value);
+    return value;
+  };
+  const saveSettings = async (event) => {
+    event.preventDefault(); setSettingsBusy(true); setError(''); setNotice('Saving settings…');
+    try {
+      const saved = await api('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+      setSettings(saved); if (saved?.max_upload_files > 0) setMaxUploadFiles(saved.max_upload_files); setNotice('Settings saved and active'); setTimeout(() => setNotice(''), 2400);
+    } catch (e) { setError(e.message); setNotice(''); }
+    finally { setSettingsBusy(false); }
+  };
+  const submitAuth = async (event) => {
+    event.preventDefault(); setAuthBusy(true); setAuthError('');
+    try { await api(`/api/v1/auth/${authInfo?.configured ? 'login' : 'setup'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: authPassword }) }); setAuthPassword(''); await refreshAuth(); await loadTrips(); }
+    catch (e) { setAuthError(e.message); }
+    finally { setAuthBusy(false); }
+  };
+  useEffect(() => { refreshAuth().catch(() => setAuthError('Could not connect to Yatra.')); }, [refreshAuth]);
+  useEffect(() => { if (authInfo?.authenticated) { loadTrips().catch((e) => setError(e.message)); loadSettings().then((value) => { if (value?.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files); }).catch((e) => setError(e.message)); } }, [authInfo?.authenticated, loadTrips]);
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
   const addSelectedFiles = (event) => {
@@ -207,13 +233,40 @@ function App() {
   const visiblePhotos = photoFilter === 'recommended' ? recommendedPhotos : photos;
   useEffect(() => () => previewFiles.forEach((item) => URL.revokeObjectURL(item.url)), [previewFiles]);
 
+  if (!authInfo) return <div className="app-shell"><main className="main-content"><p>Connecting to Yatra…</p></main></div>;
+  if (!authInfo.authenticated) return <div className="app-shell"><main className="main-content"><section className="welcome"><p className="eyebrow">YATRA</p><h1>{authInfo.configured ? 'Welcome back' : 'Set up Yatra'}</h1><p className="intro">{authInfo.configured ? 'Enter your app password to continue.' : 'Create an app password to protect your photos, drafts, and settings.'}</p></section><section className="create-card"><form onSubmit={submitAuth}><label className="field">App password<input autoFocus type="password" autoComplete={authInfo.configured ? 'current-password' : 'new-password'} minLength={12} required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} /></label>{authError && <p className="message message-error" role="alert">{authError}</p>}<button className="button button-primary full-button" disabled={authBusy}>{authBusy ? 'Unlocking…' : authInfo.configured ? 'Unlock Yatra' : 'Create password'}</button></form></section></main></div>;
   return <div className="app-shell">
     <header className="topbar">
-      <button className="brand" onClick={() => { setScreen('home'); setTrip(null); setArticle(null); loadTrips(); }} aria-label="Yatra home"><span className="brand-mark">Y</span><span>yatra</span></button>
-      <span className="topbar-note">A little help turning trips into stories</span>
+      <button className="brand" onClick={() => { setScreen('home'); setTrip(null); setArticle(null); loadTrips(); }} aria-label="Yatra home"><span className="brand-mark">Y</span><span>Yatra</span></button>
+      <span className="topbar-note">Turn trip notes into memorable blog posts</span>
+      <div className="topbar-actions"><button className="text-button" onClick={async () => { setError(''); try { await loadSettings(); setScreen('settings'); } catch (e) { setError(e.message); } }}>Settings</button><button className="text-button" onClick={async () => { await api('/api/v1/auth/logout', { method: 'POST' }); setAuthInfo({ ...(authInfo || {}), authenticated: false }); setScreen('home'); }}>Lock</button></div>
     </header>
     <main className="main-content">
       {(error || notice) && <div className={`message ${error ? 'message-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}<button onClick={() => { setError(''); if (error) setNotice(''); }} aria-label="Dismiss">×</button></div>}
+
+      {screen === 'settings' && <>
+        <button className="back-link" onClick={() => setScreen('home')}>← Back to stories</button>
+        <section className="welcome"><p className="eyebrow">YATRA</p><h1>Settings</h1><p className="intro">Credentials are encrypted on this server and never shown again after saving. Leave a key blank to keep the saved key.</p></section>
+        {settings && <form className="create-card settings-form" onSubmit={saveSettings}>
+          <p className="eyebrow">LANGUAGE MODEL</p>
+          <label className="field">OpenAI-compatible API URL<input required value={settings.llm_base_url} onChange={(e) => setSettings({ ...settings, llm_base_url: e.target.value })} placeholder="https://api.openai.com/v1" /></label>
+          <label className="field">API key <span className="field-help">{settings.llm_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.llm_api_key || ''} onChange={(e) => setSettings({ ...settings, llm_api_key: e.target.value })} /></label>
+          <div className="field-row"><label className="field">Writing model<input value={settings.writer_model} onChange={(e) => setSettings({ ...settings, writer_model: e.target.value })} /></label><label className="field">Vision model<input value={settings.vision_model} onChange={(e) => setSettings({ ...settings, vision_model: e.target.value })} /></label></div>
+          <label className="field">Request timeout (seconds)<input type="number" min="1" max="3600" value={settings.timeout_seconds} onChange={(e) => setSettings({ ...settings, timeout_seconds: Number(e.target.value) })} /></label>
+          <p className="eyebrow settings-section">GHOST</p>
+          <label className="field">Ghost site URL<input value={settings.ghost_url} onChange={(e) => setSettings({ ...settings, ghost_url: e.target.value })} placeholder="https://yourblog.example" /><span className="field-help">Use the site URL without /ghost/api/admin.</span></label>
+          <label className="field">Ghost Admin API key <span className="field-help">{settings.ghost_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.ghost_admin_key || ''} onChange={(e) => setSettings({ ...settings, ghost_admin_key: e.target.value })} /></label>
+          <p className="eyebrow settings-section">PLACE RESEARCH</p>
+          <label className="check-field"><input type="checkbox" checked={settings.web_research} onChange={(e) => setSettings({ ...settings, web_research: e.target.checked })} /> Search the web for destination facts</label>
+          <p className="field-help">Off by default. When off, your configured model provides place background. When on, Yatra uses Brave Search.</p>
+          <label className="field">Brave Search API key <span className="field-help">{settings.brave_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.brave_key || ''} onChange={(e) => setSettings({ ...settings, brave_key: e.target.value })} /></label>
+          <p className="eyebrow settings-section">PHOTOS AND UPLOADS</p>
+          <div className="field-row settings-grid"><label className="field">Thumbnail size (px)<input type="number" min="100" value={settings.thumbnail_size} onChange={(e) => setSettings({ ...settings, thumbnail_size: Number(e.target.value) })} /></label><label className="field">Preview size (px)<input type="number" min="100" value={settings.preview_size} onChange={(e) => setSettings({ ...settings, preview_size: Number(e.target.value) })} /></label><label className="field">Ghost image size (px)<input type="number" min="100" value={settings.export_size} onChange={(e) => setSettings({ ...settings, export_size: Number(e.target.value) })} /></label><label className="field">JPEG quality (30–100)<input type="number" min="30" max="100" value={settings.jpeg_quality} onChange={(e) => setSettings({ ...settings, jpeg_quality: Number(e.target.value) })} /></label></div>
+          <p className="field-help">Image settings apply to new uploads; existing photo derivatives are not regenerated.</p>
+          <div className="field-row settings-grid"><label className="field">Maximum size per photo (MB)<input type="number" min="1" value={settings.max_file_size_mb} onChange={(e) => setSettings({ ...settings, max_file_size_mb: Number(e.target.value) })} /></label><label className="field">Maximum upload total (MB)<input type="number" min="1" value={settings.max_upload_size_mb} onChange={(e) => setSettings({ ...settings, max_upload_size_mb: Number(e.target.value) })} /></label><label className="field">Photos per upload<input type="number" min="1" max="1000" value={settings.max_upload_files} onChange={(e) => setSettings({ ...settings, max_upload_files: Number(e.target.value) })} /></label></div>
+          <button className="button button-primary full-button" disabled={settingsBusy}>{settingsBusy ? 'Saving…' : 'Save settings'}</button>
+        </form>}
+      </>}
 
       {screen === 'home' && <>
         <section className="welcome">

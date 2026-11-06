@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/karan/travel-diary/internal/adapters"
 	"github.com/karan/travel-diary/internal/config"
@@ -15,6 +16,7 @@ import (
 // Genie runs the analysis pipeline: VLM analysis of photos,
 // experience extraction, photo matching, and article generation.
 type Genie struct {
+	mu        sync.RWMutex
 	cfg       *config.Config
 	store     *store.Store
 	vlm       adapters.VLMAdapter
@@ -47,12 +49,39 @@ func NewGenie(cfg *config.Config, s *store.Store, vlm adapters.VLMAdapter, text 
 	}
 }
 
+// Configure replaces provider adapters and configuration for the next job.
+func (g *Genie) Configure(cfg *config.Config) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var text adapters.TextAdapter = &adapters.FakeTextAdapter{}
+	if cfg.OMLXAPIKey != "" && cfg.OMLXWriterModel != "" {
+		text = adapters.NewOpenAITextAdapter(cfg)
+	}
+	visionModel := cfg.OMLXVisionModel
+	if visionModel == "" {
+		visionModel = cfg.OMLXWriterModel
+	}
+	var vision adapters.VLMAdapter = &adapters.FakeVLMAdapter{}
+	if cfg.OMLXAPIKey != "" && visionModel != "" {
+		v := adapters.NewOpenAIVisionAdapter(cfg)
+		v.Model = visionModel
+		vision = v
+	}
+	g.text = text
+	g.vlm = vision
+	g.extractor.text = text
+	g.drafter.text = text
+	g.drafter.SetConfig(cfg)
+}
+
 // AnalyseTrip runs VLM analysis on all photos in a trip.
 func (g *Genie) AnalyseTrip(ctx context.Context, tripID string) error {
 	return g.AnalyseTripJob(ctx, tripID, "job_"+tripID+"_analyse")
 }
 
 func (g *Genie) AnalyseTripJob(ctx context.Context, tripID, jobID string) error {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	trip, err := g.store.Trips.Get(ctx, tripID)
 	if err != nil {
 		return fmt.Errorf("get trip: %w", err)
@@ -135,6 +164,8 @@ func (g *Genie) AnalyseTripJob(ctx context.Context, tripID, jobID string) error 
 
 // GenerateArticle creates an initial article from the trip's notes and photos.
 func (g *Genie) GenerateArticle(ctx context.Context, tripID string) (retErr error) {
+	g.mu.RLock()
+	defer g.mu.RUnlock()
 	trip, err := g.store.Trips.Get(ctx, tripID)
 	if err != nil {
 		return fmt.Errorf("get trip: %w", err)

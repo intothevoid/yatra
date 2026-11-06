@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,21 +22,24 @@ import (
 
 // App holds all dependencies for HTTP handlers.
 type App struct {
-	cfg      *config.Config
-	store    *store.Store
-	importer *services.Importer
-	genie    *services.Genie
-	exporter *services.GhostExporter
+	cfg        *config.Config
+	store      *store.Store
+	importer   *services.Importer
+	genie      *services.Genie
+	exporter   *services.GhostExporter
+	auth       *AuthManager
+	settingsMu sync.Mutex
 }
 
 // NewApp creates a new application.
 func NewApp(cfg *config.Config, s *store.Store, imp *services.Importer, gen *services.Genie, exp *services.GhostExporter) *App {
-	return &App{cfg: cfg, store: s, importer: imp, genie: gen, exporter: exp}
+	return &App{cfg: cfg, store: s, importer: imp, genie: gen, exporter: exp, auth: NewAuthManager(cfg)}
 }
 
 // Router returns the chi router with all routes registered.
 func (a *App) Router() http.Handler {
 	r := chi.NewRouter()
+	r.Use(a.auth.Middleware)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
@@ -48,7 +52,11 @@ func (a *App) Router() http.Handler {
 
 	r.Get("/health/live", a.healthLive)
 	r.Get("/health/ready", a.healthReady)
-	r.Get("/api/v1/settings", a.publicSettings)
+	a.registerSettingsRoutes(r)
+	r.Get("/api/v1/auth/status", a.auth.status)
+	r.Post("/api/v1/auth/setup", a.auth.setup)
+	r.Post("/api/v1/auth/login", a.auth.login)
+	r.Post("/api/v1/auth/logout", a.auth.logout)
 
 	r.Get("/api/v1/trips", a.listTrips)
 	r.Delete("/api/v1/trips/{id}", a.deleteTrip)
@@ -84,15 +92,6 @@ func (a *App) Router() http.Handler {
 	r.Handle("/vite.svg", http.FileServer(http.FS(staticFS)))
 
 	return r
-}
-
-func (a *App) publicSettings(w http.ResponseWriter, r *http.Request) {
-	maxUploadFiles := a.cfg.MaxUploadFiles
-	if maxUploadFiles <= 0 {
-		maxUploadFiles = 200
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]int{"max_upload_files": maxUploadFiles})
 }
 
 // healthLive returns 200 if the process is running.
