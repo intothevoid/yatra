@@ -153,3 +153,16 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
   .title-field input { font-size: 25px; }
   .research-card { padding: 13px; }
 }
+.video-review-title { margin: 1.5rem 0 .75rem; }
+.video-review-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:1rem; }
+.video-review-card { border:2px solid transparent; border-radius:12px; background:#f4f1ea; padding:.5rem; text-align:left; color:inherit; cursor:pointer; }
+.video-review-card.chosen { border-color:#27765b; }
+.video-review-card video { width:100%; aspect-ratio:16/9; object-fit:contain; background:#171717; border-radius:8px; display:block; }
+.video-review-card span { display:block; padding:.5rem .25rem .2rem; overflow-wrap:anywhere; }
+.preview-grid .local-photo { position:relative; display:flex; flex-direction:column; gap:.35rem; min-width:0; }
+.preview-grid .local-photo video { width:100%; aspect-ratio:4/3; object-fit:contain; background:#171717; border-radius:8px; }
+.preview-grid .local-photo strong { font-size:.78rem; overflow-wrap:anywhere; }
+.remove-local-photo { position:absolute; top:.35rem; right:.35rem; width:1.8rem; height:1.8rem; border:0; border-radius:50%; background:#fff; cursor:pointer; font-size:1.2rem; }
+.video-trim { display:flex; gap:.5rem; }
+.video-trim label { flex:1; font-size:.75rem; }
+.video-trim input { width:100%; min-width:0; }

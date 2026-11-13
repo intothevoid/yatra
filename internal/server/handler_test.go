@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/karan/travel-diary/internal/adapters"
 	"github.com/karan/travel-diary/internal/config"
@@ -36,7 +37,14 @@ func setupApp(t *testing.T) (*App, *httptest.Server) {
 	genie := services.NewGenie(cfg, s, vlm, text, proc)
 
 	app := NewApp(cfg, s, importer, genie, nil)
-	srv := httptest.NewServer(app.Router())
+	app.auth.sessions["test-session"] = time.Now().Add(time.Hour)
+	app.auth.keys["test-session"] = []byte("test-session-key")
+	router := app.Router()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		request := r.Clone(r.Context())
+		request.AddCookie(&http.Cookie{Name: "yatra_session", Value: "test-session"})
+		router.ServeHTTP(w, request)
+	}))
 	t.Cleanup(srv.Close)
 
 	return app, srv

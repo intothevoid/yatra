@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/karan/travel-diary/internal/adapters"
 	"github.com/karan/travel-diary/internal/config"
@@ -42,16 +43,21 @@ func (i *Importer) ImportTrip(ctx context.Context, tripID, sourcePath string) er
 	if !i.cfg.IsPathAllowed(sourcePath) {
 		return fmt.Errorf("path not allowed: %s", sourcePath)
 	}
-	return i.importTrip(ctx, tripID, sourcePath)
+	return i.importTrip(ctx, tripID, sourcePath, nil, "")
 }
 
 // ImportUploadedPhotos imports files saved by the browser upload handler
 // into a trip's private data directory.
 func (i *Importer) ImportUploadedPhotos(ctx context.Context, tripID, sourcePath string) error {
-	return i.importTrip(ctx, tripID, sourcePath)
+	return i.importTrip(ctx, tripID, sourcePath, nil, "")
 }
 
-func (i *Importer) importTrip(ctx context.Context, tripID, sourcePath string) error {
+// ImportUploadedMedia imports photos and videos with optional per-file trim ranges.
+func (i *Importer) ImportUploadedMedia(ctx context.Context, tripID, sourcePath string, trims map[string]VideoTrim, profile string) error {
+	return i.importTrip(ctx, tripID, sourcePath, trims, profile)
+}
+
+func (i *Importer) importTrip(ctx context.Context, tripID, sourcePath string, trims map[string]VideoTrim, profileOverride string) error {
 
 	// Read notes file if present
 	notesPath := filepath.Join(sourcePath, "story.txt")
@@ -161,9 +167,138 @@ func (i *Importer) importTrip(ctx context.Context, tripID, sourcePath string) er
 				return fmt.Errorf("save photo %s: %w", name, err)
 			}
 		}
+		if strings.HasPrefix(mime, "video/") {
+			videoID := "v_" + hash[:24]
+			videoPath := filepath.Join(i.cfg.DataDir, "assets", tripID, "videos", videoID+".mp4")
+			posterPath := filepath.Join(i.cfg.DataDir, "assets", tripID, "videos", videoID+".webp")
+			if size > i.cfg.VideoMaxSourceSize {
+				return fmt.Errorf("video %s exceeds the source video size limit of %d bytes", name, i.cfg.VideoMaxSourceSize)
+			}
+			sourcePath := filepath.Join(i.cfg.DataDir, "assets", tripID, "source-video", videoID+strings.ToLower(filepath.Ext(name)))
+			if err := copyImmutableFile(path, sourcePath); err != nil {
+				return fmt.Errorf("preserve source video %s: %w", name, err)
+			}
+			profile := profileOverride
+			if profile == "" {
+				profile = i.cfg.VideoDefaultProfile
+			}
+			if profile == "" {
+				profile = "standard"
+			}
+			video := domain.Video{ID: videoID, TripID: tripID, SourceFileID: domain.GenerateSourceFileID(tripID, name), FileName: name, Container: "mp4", Codec: "h264", SourcePath: sourcePath, SourceBytes: size, Path: videoPath, PosterPath: posterPath, Profile: profile, Status: "processing", Selected: true}
+			if err := i.store.Videos.Upsert(ctx, video); err != nil {
+				return fmt.Errorf("save video processing state %s: %w", name, err)
+			}
+			processCtx := ctx
+			cancel := func() {}
+			if i.cfg.VideoProcessingTimeoutSec > 0 {
+				processCtx, cancel = context.WithTimeout(ctx, time.Duration(i.cfg.VideoProcessingTimeoutSec)*time.Second)
+			}
+			defer cancel()
+			result, err := transcodeVideo(processCtx, i.cfg, sourcePath, videoPath, posterPath, trims[name], profile)
+			if err != nil {
+				video.Status = "failed"
+				video.Error = err.Error()
+				_ = i.store.Videos.Upsert(context.WithoutCancel(ctx), video)
+				return fmt.Errorf("process video %s: %w", name, err)
+			}
+			if result.VideoBytes > i.cfg.MaxFileSize {
+				video.Status = "failed"
+				video.Error = fmt.Sprintf("optimized video is too large: %d bytes (max %d)", result.VideoBytes, i.cfg.MaxFileSize)
+				_ = i.store.Videos.Upsert(context.WithoutCancel(ctx), video)
+				return fmt.Errorf("optimized video %s is too large: %d bytes (max %d); shorten the clip or use the lightweight profile", name, result.VideoBytes, i.cfg.MaxFileSize)
+			}
+			video.SourceContainer = result.Source.Container
+			video.SourceCodec = result.Source.Codec
+			video.SourceDuration = result.Source.Duration
+			video.SourceWidth = result.Source.Width
+			video.SourceHeight = result.Source.Height
+			video.SourceFrameRate = result.Source.FrameRate
+			video.SourceHasAudio = result.Source.HasAudio
+			video.SourceCreatedAt = result.Source.CreationTime
+			video.Rotation = result.Source.Rotation
+			video.StartTime = trims[name].Start
+			video.EndTime = trims[name].Start + result.Duration
+			video.Container = "mp4"
+			video.Codec = result.Processed.Codec
+			video.FrameRate = result.Processed.FrameRate
+			video.Duration = result.Duration
+			video.Width = result.Processed.Width
+			video.Height = result.Processed.Height
+			video.HasAudio = result.Processed.HasAudio
+			video.OutputBytes = result.VideoBytes
+			video.PosterBytes = result.PosterBytes
+			video.Status = "completed"
+			video.Error = ""
+			if err := i.store.Videos.Upsert(ctx, video); err != nil {
+				return fmt.Errorf("save video %s: %w", name, err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// ReprocessVideo re-encodes a preserved source video with a new trim or profile.
+func (i *Importer) ReprocessVideo(ctx context.Context, tripID, videoID string, trim VideoTrim, profile string) error {
+	video, err := i.store.Videos.Get(ctx, videoID)
+	if err != nil {
+		return err
+	}
+	if video.TripID != tripID {
+		return fmt.Errorf("video does not belong to this trip")
+	}
+	if profile != "standard" && profile != "lightweight" {
+		return fmt.Errorf("profile must be standard or lightweight")
+	}
+	video.Status = "processing"
+	video.Error = ""
+	if err = i.store.Videos.Upsert(ctx, *video); err != nil {
+		return err
+	}
+	processCtx := ctx
+	cancel := func() {}
+	if i.cfg.VideoProcessingTimeoutSec > 0 {
+		processCtx, cancel = context.WithTimeout(ctx, time.Duration(i.cfg.VideoProcessingTimeoutSec)*time.Second)
+	}
+	defer cancel()
+	result, err := transcodeVideo(processCtx, i.cfg, video.SourcePath, video.Path, video.PosterPath, trim, profile)
+	if err != nil {
+		video.Status = "failed"
+		video.Error = err.Error()
+		_ = i.store.Videos.Upsert(context.WithoutCancel(ctx), *video)
+		return err
+	}
+	if result.VideoBytes > i.cfg.MaxFileSize {
+		video.Status = "failed"
+		video.Error = fmt.Sprintf("optimized video is too large: %d bytes (max %d)", result.VideoBytes, i.cfg.MaxFileSize)
+		_ = i.store.Videos.Upsert(context.WithoutCancel(ctx), *video)
+		return fmt.Errorf("%s", video.Error)
+	}
+	video.Profile = profile
+	video.SourceContainer = result.Source.Container
+	video.SourceCodec = result.Source.Codec
+	video.SourceDuration = result.Source.Duration
+	video.SourceWidth = result.Source.Width
+	video.SourceHeight = result.Source.Height
+	video.SourceFrameRate = result.Source.FrameRate
+	video.SourceHasAudio = result.Source.HasAudio
+	video.SourceCreatedAt = result.Source.CreationTime
+	video.Rotation = result.Source.Rotation
+	video.Container = "mp4"
+	video.Codec = result.Processed.Codec
+	video.FrameRate = result.Processed.FrameRate
+	video.Duration = result.Duration
+	video.Width = result.Processed.Width
+	video.Height = result.Processed.Height
+	video.HasAudio = result.Processed.HasAudio
+	video.OutputBytes = result.VideoBytes
+	video.PosterBytes = result.PosterBytes
+	video.StartTime = trim.Start
+	video.EndTime = trim.Start + result.Duration
+	video.Status = "completed"
+	video.Error = ""
+	return i.store.Videos.Upsert(ctx, *video)
 }
 
 // derivativeName keeps JPEG filenames as-is and gives other source formats a
@@ -191,6 +326,44 @@ func hashFile(path string) (string, int64, error) {
 	return hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
+func copyImmutableFile(source, destination string) error {
+	if _, err := os.Stat(destination); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+		return err
+	}
+	in, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(destination), ".source-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if _, err = io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(tmpPath, destination); err != nil {
+		if _, statErr := os.Stat(destination); statErr == nil {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 func detectMIME(name string) string {
 	ext := strings.ToLower(filepath.Ext(name))
 	switch ext {
@@ -200,6 +373,26 @@ func detectMIME(name string) string {
 		return "image/png"
 	case ".heic", ".heif":
 		return "image/heic"
+	case ".mp4", ".m4v", ".mov":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".mkv":
+		return "video/x-matroska"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".mpeg", ".mpg":
+		return "video/mpeg"
+	case ".3gp":
+		return "video/3gpp"
+	case ".mts", ".m2ts":
+		return "video/mp2t"
+	case ".wmv":
+		return "video/x-ms-wmv"
+	case ".flv":
+		return "video/x-flv"
+	case ".ogv":
+		return "video/ogg"
 	default:
 		return "application/octet-stream"
 	}

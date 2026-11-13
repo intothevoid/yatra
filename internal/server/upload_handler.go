@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -61,7 +62,7 @@ func (h *UploadHandler) handleTripPhotoUpload(w http.ResponseWriter, r *http.Req
 	}
 	files := r.MultipartForm.File["files"]
 	if len(files) == 0 || len(files) > h.maxUploadFiles() {
-		writeUploadError(w, http.StatusBadRequest, "upload_failed", "choose between 1 and the configured maximum number of photos")
+		writeUploadError(w, http.StatusBadRequest, "upload_failed", "choose between 1 and the configured maximum number of files")
 		return
 	}
 	tripDir := filepath.Join(h.cfg.DataDir, "assets", tripID, "source")
@@ -72,6 +73,7 @@ func (h *UploadHandler) handleTripPhotoUpload(w http.ResponseWriter, r *http.Req
 	type uploaded struct {
 		URL      string `json:"url"`
 		FileName string `json:"fileName"`
+		Type     string `json:"type"`
 	}
 	results := make([]uploaded, 0, len(files))
 	var total int64
@@ -83,10 +85,6 @@ func (h *UploadHandler) handleTripPhotoUpload(w http.ResponseWriter, r *http.Req
 		return
 	}
 	for _, fh := range files {
-		if fh.Size > h.cfg.MaxFileSize {
-			writeUploadError(w, http.StatusBadRequest, "upload_failed", fmt.Sprintf("photo %s exceeds the per-file size limit", sanitizeFilename(fh.Filename)))
-			return
-		}
 		f, err := fh.Open()
 		if err != nil {
 			writeUploadError(w, http.StatusBadRequest, "upload_failed", "could not read an uploaded photo")
@@ -99,9 +97,22 @@ func (h *UploadHandler) handleTripPhotoUpload(w http.ResponseWriter, r *http.Req
 			writeUploadError(w, http.StatusBadRequest, "upload_failed", "could not inspect an uploaded photo")
 			return
 		}
-		if !domain.SupportedImageMIMEs[detectUploadMIME(header)] {
+		mimeType := detectUploadMIME(header)
+		isVideo := isVideoUpload(fh.Filename, mimeType)
+		if !domain.SupportedImageMIMEs[mimeType] && !isVideo {
 			f.Close()
-			writeUploadError(w, http.StatusBadRequest, "upload_failed", "only supported image files can be added")
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", "only supported image or video files can be added")
+			return
+		}
+		if !isVideo && fh.Size > h.cfg.MaxFileSize {
+			f.Close()
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", fmt.Sprintf("photo %s exceeds the per-file size limit", sanitizeFilename(fh.Filename)))
+			return
+		}
+		if isVideo && fh.Size > h.cfg.VideoMaxSourceSize {
+			f.Close()
+			writeUploadError(w, http.StatusBadRequest, "upload_failed", fmt.Sprintf("video %s exceeds the source video size limit", sanitizeFilename(fh.Filename)))
+			return
 			return
 		}
 		if _, err := f.Seek(0, io.SeekStart); err != nil {
@@ -123,23 +134,49 @@ func (h *UploadHandler) handleTripPhotoUpload(w http.ResponseWriter, r *http.Req
 			return
 		}
 		hash := sha256.New()
-		_, copyErr := io.Copy(io.MultiWriter(dest, hash), io.LimitReader(f, h.cfg.MaxFileSize+1))
+		_, copyErr := io.Copy(io.MultiWriter(dest, hash), f)
 		dest.Close()
 		f.Close()
 		if copyErr != nil {
 			writeUploadError(w, http.StatusInternalServerError, "upload_failed", "could not save an uploaded photo")
 			return
 		}
-		photoID := "p_" + hex.EncodeToString(hash.Sum(nil))
-		results = append(results, uploaded{URL: "/api/v1/photos/" + photoID + "/thumbnail", FileName: fh.Filename})
+		digest := hex.EncodeToString(hash.Sum(nil))
+		if isVideo {
+			videoID := "v_" + digest[:24]
+			results = append(results, uploaded{URL: "/api/v1/videos/" + videoID + "/content", FileName: fh.Filename, Type: "video"})
+		} else {
+			photoID := "p_" + digest
+			results = append(results, uploaded{URL: "/api/v1/photos/" + photoID + "/thumbnail", FileName: fh.Filename, Type: "image"})
+		}
 	}
-	if err := h.importer.ImportUploadedPhotos(r.Context(), tripID, tripDir); err != nil {
+	trims := make(map[string]services.VideoTrim)
+	for _, fh := range files {
+		name := sanitizeFilename(fh.Filename)
+		key := "video_trim_" + name
+		start, _ := strconv.ParseFloat(r.FormValue(key+"_start"), 64)
+		end, _ := strconv.ParseFloat(r.FormValue(key+"_end"), 64)
+		if start > 0 || end > 0 {
+			trims[name] = services.VideoTrim{Start: start, End: end}
+		}
+	}
+	profile := r.FormValue("video_profile")
+	if profile != "" && profile != "standard" && profile != "lightweight" {
+		writeUploadError(w, http.StatusBadRequest, "invalid_profile", "video profile must be standard or lightweight")
+		return
+	}
+	if err := h.importer.ImportUploadedMedia(r.Context(), tripID, tripDir, trims, profile); err != nil {
 		writeUploadError(w, http.StatusInternalServerError, "upload_failed", err.Error())
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]any{"uploads": results})
+	videos, _ := h.store.Videos.GetByTrip(r.Context(), tripID)
+	for i := range videos {
+		videos[i].URL = "/api/v1/videos/" + videos[i].ID + "/content"
+		videos[i].PosterURL = "/api/v1/videos/" + videos[i].ID + "/poster"
+	}
+	json.NewEncoder(w).Encode(map[string]any{"uploads": results, "videos": videos})
 }
 
 func writeUploadError(w http.ResponseWriter, status int, code, message string) {
@@ -263,11 +300,10 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 	// Process each file
 	var totalSize int64
 	for _, fh := range files {
-		// Check file size
-		if fh.Size > h.cfg.MaxFileSize {
-			return fmt.Errorf("file %s too large: %d bytes (max %d)", fh.Filename, fh.Size, h.cfg.MaxFileSize)
-		}
 		totalSize += fh.Size
+		if totalSize > h.cfg.MaxUploadSize {
+			return fmt.Errorf("total upload size %d exceeds limit %d", totalSize, h.cfg.MaxUploadSize)
+		}
 
 		// Open and validate
 		f, err := fh.Open()
@@ -284,9 +320,13 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 		f.Seek(0, 0)
 
 		mimeType := detectUploadMIME(buffer)
-		if !domain.SupportedImageMIMEs[mimeType] {
+		if !domain.SupportedImageMIMEs[mimeType] && !isVideoUpload(fh.Filename, mimeType) {
 			f.Close()
 			return fmt.Errorf("file %s has unsupported type: %s", sanitizeFilename(fh.Filename), mimeType)
+		}
+		if !isVideoUpload(fh.Filename, mimeType) && fh.Size > h.cfg.MaxFileSize {
+			f.Close()
+			return fmt.Errorf("file %s too large: %d bytes (max %d)", fh.Filename, fh.Size, h.cfg.MaxFileSize)
 		}
 
 		// Validate filename
@@ -325,14 +365,19 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	// Check total size
-	if totalSize > h.cfg.MaxUploadSize {
-		return fmt.Errorf("total upload size %d exceeds limit %d", totalSize, h.cfg.MaxUploadSize)
-	}
-
 	// Import
 	tripID := domain.GenerateTripID(tmpDir)
-	if err := h.importer.ImportUploadedPhotos(r.Context(), tripID, tmpDir); err != nil {
+	trims := make(map[string]services.VideoTrim)
+	for _, fh := range files {
+		name := sanitizeFilename(fh.Filename)
+		key := "video_trim_" + name
+		start, _ := strconv.ParseFloat(r.FormValue(key+"_start"), 64)
+		end, _ := strconv.ParseFloat(r.FormValue(key+"_end"), 64)
+		if start > 0 || end > 0 {
+			trims[name] = services.VideoTrim{Start: start, End: end}
+		}
+	}
+	if err := h.importer.ImportUploadedMedia(r.Context(), tripID, tmpDir, trims, r.FormValue("video_profile")); err != nil {
 		return fmt.Errorf("import: %w", err)
 	}
 	trip, err := h.store.Trips.Get(r.Context(), tripID)
@@ -352,6 +397,17 @@ func (h *UploadHandler) handleFileUpload(w http.ResponseWriter, r *http.Request,
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(map[string]string{"trip_id": tripID})
 	return nil
+}
+
+func isVideoUpload(filename, mimeType string) bool {
+	if strings.HasPrefix(mimeType, "video/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".mpeg", ".mpg", ".3gp", ".mts", ".m2ts", ".wmv", ".flv", ".ogv":
+		return true
+	}
+	return false
 }
 
 func detectUploadMIME(header []byte) string {

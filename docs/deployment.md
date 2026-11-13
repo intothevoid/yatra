@@ -2,8 +2,9 @@
 
 ## Prerequisites
 
-- Go 1.22+ (for native builds)
+- Go 1.26.4+ (for native builds)
 - Docker + Docker Compose (for container deployment)
+- FFmpeg, FFprobe, and libvips WebP support (for native video processing)
 - OMLX server running locally or on LAN
 - Ghost instance (v5+) for publishing
 
@@ -11,7 +12,7 @@
 
 ```bash
 # Install dependencies
-brew install exiftool vips  # macOS
+brew install exiftool vips ffmpeg  # macOS
 # or
 sudo apt install libimage-exiftool-perl libvips  # Debian/Ubuntu
 
@@ -60,6 +61,15 @@ cp .env.example .env
 | `MAX_FILE_SIZE_MB` | Max upload file size (MB) | `50` |
 | `MAX_UPLOAD_SIZE_MB` | Max total upload size (MB) | `500` |
 | `MAX_UPLOAD_FILES` | Max photos per browser upload | `200` |
+| `VIDEO_ENABLED` | Enable local FFmpeg processing | `true` |
+| `FFMPEG_PATH` / `FFPROBE_PATH` / `VIPS_PATH` | Tool executable paths | `ffmpeg` / `ffprobe` / `vips` |
+| `VIDEO_DEFAULT_PROFILE` | Default encoding profile | `standard` |
+| `VIDEO_DEFAULT_DURATION_SECONDS` | Default trim duration (user can override) | `6` |
+| `VIDEO_PROCESSING_TIMEOUT_SECONDS` | Per-clip timeout | `300` |
+| `VIDEO_MAX_SOURCE_SIZE_MB` | Maximum video source size | `500` |
+| `VIDEO_POSTER_QUALITY` | WebP poster quality | `80` |
+| `VIDEO_STANDARD_*` | Width, height, fps, CRF, preset | `1920`, `1080`, `25`, `24`, `slow` |
+| `VIDEO_LIGHTWEIGHT_*` | Width, height, fps, CRF, preset | `1280`, `720`, `25`, `26`, `slow` |
 
 ## Security
 
@@ -99,3 +109,11 @@ tar xzf backup.tar.gz -C /path/to/app
 - Verify `exiftool` and `vips` are installed
 - Check that the data directory is writable
 - For HEIC support, ensure `libheif` is installed
+
+### Video processing issues
+
+- Install FFmpeg/FFprobe and verify both are on `PATH`; set `FFMPEG_PATH` and `FFPROBE_PATH` when they are elsewhere.
+- WebP posters are written with libvips (`vips`). Install `vips` on macOS with Homebrew; the Docker image includes `libvips-tools`.
+- If conversion reports an encoder or dimension error, update FFmpeg and check that its build includes `libx264`. The encoder rounds scaled dimensions down to even values while preserving source aspect ratio.
+- Original videos remain in `DATA_DIR/assets/<trip>/source-video/`; MP4s and WebP posters are stored in `DATA_DIR/assets/<trip>/videos/`.
+- To pause off-screen videos and respect reduced-motion preferences on the public Ghost site, copy `docs/video-playback.js` into your Ghost theme footer (or equivalent theme asset). The local editor does not supply scripts to the Ghost theme.

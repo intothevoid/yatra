@@ -37,12 +37,26 @@ func TestStoryLayoutKeepsSubjectsAndUsesLeadPlusMosaic(t *testing.T) {
 
 func TestGhostConvertsKoenigParagraphHeading(t *testing.T) {
 	node := map[string]any{"type": "paragraph", "children": []any{map[string]any{"type": "extended-text", "text": "### Food"}}}
-	enrichLexicalCaptions(node, nil)
+	enrichLexicalCaptions(node, nil, nil)
 	if node["type"] != "heading" || node["tag"] != "h3" {
 		t.Fatalf("heading stayed a paragraph: %#v", node)
 	}
 	if text := node["children"].([]any)[0].(map[string]any)["text"]; text != "Food" {
 		t.Fatal(text)
+	}
+}
+
+func TestGhostVideoMarkupUsesHostedPosterAndSilentLoopingPlayback(t *testing.T) {
+	blocks := []domain.ArticleBlock{{Type: domain.BlockParagraph, Text: "Before"}, {Type: domain.BlockVideo, VideoID: "https://media.example/clip.mp4", VideoPosterURL: "https://media.example/poster.webp"}, {Type: domain.BlockParagraph, Text: "After"}}
+	html := blocksToHTML(blocks)
+	before, video, after := strings.Index(html, "Before"), strings.Index(html, "travel-video"), strings.Index(html, "After")
+	if before < 0 || video < before || after < video {
+		t.Fatalf("video markup order is wrong: %s", html)
+	}
+	for _, required := range []string{"autoplay", "muted", "loop", "playsinline", "preload=\"none\"", "poster=\"https://media.example/poster.webp\"", "https://media.example/clip.mp4"} {
+		if !strings.Contains(html, required) {
+			t.Errorf("video markup missing %q: %s", required, html)
+		}
 	}
 }
 

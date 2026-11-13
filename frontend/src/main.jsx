@@ -16,6 +16,13 @@ const api = async (path, options = {}) => {
   return response.json();
 };
 
+const isVideoFile = (file) => file.type.startsWith('video/') || /\.(mp4|m4v|mov|webm|mkv|avi|mpeg|mpg|3gp|mts|m2ts|wmv|flv|ogv)$/i.test(file.name);
+const trimPreviewProps = (start, end, onMetadata) => ({
+  onLoadedMetadata: (event) => { onMetadata(event.currentTarget.duration); event.currentTarget.currentTime = start; },
+  onPlay: (event) => { if (event.currentTarget.currentTime < start || event.currentTarget.currentTime >= end) event.currentTarget.currentTime = start; },
+  onTimeUpdate: (event) => { if (end > start && event.currentTarget.currentTime >= end) { event.currentTarget.pause(); event.currentTarget.currentTime = end; } },
+});
+
 
 function App() {
   const [authInfo, setAuthInfo] = useState(null);
@@ -27,6 +34,16 @@ function App() {
   const [trips, setTrips] = useState([]);
   const [trip, setTrip] = useState(null);
   const [photos, setPhotos] = useState([]);
+  const [videos, setVideos] = useState([]);
+  const [videoDurations, setVideoDurations] = useState({});
+  const [videoTrims, setVideoTrims] = useState({});
+  const [videoProfile, setVideoProfile] = useState('standard');
+  const [videoDefaultDuration, setVideoDefaultDuration] = useState(6);
+  const [videoProcessingID, setVideoProcessingID] = useState('');
+  const [videoEditSettings, setVideoEditSettings] = useState({});
+  const [tripMediaFiles, setTripMediaFiles] = useState([]);
+  const [tripMediaDurations, setTripMediaDurations] = useState({});
+  const [tripMediaTrims, setTripMediaTrims] = useState({});
   const [article, setArticle] = useState(null);
   const [screen, setScreen] = useState('home');
   const [busy, setBusy] = useState(false);
@@ -54,6 +71,7 @@ function App() {
   const [featurePhotoID, setFeaturePhotoID] = useState('');
   const [form, setForm] = useState({ title: '', location: '', notes: '' });
   const fileRef = useRef(null);
+  const tripMediaRef = useRef(null);
   const saveTimer = useRef(null);
 
   const loadTrips = useCallback(async () => {
@@ -138,6 +156,8 @@ function App() {
     loadSettings().then((value) => { if (value?.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files); }).catch((e) => setError(e.message));
     api('/api/v1/settings').then((value) => {
       if (value.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files);
+      if (value.video_default_profile) setVideoProfile(value.video_default_profile);
+      if (value.video_default_duration_seconds > 0) setVideoDefaultDuration(value.video_default_duration_seconds);
       setModelProvider(value.model_provider || 'fake'); setLocalConfigured(Boolean(value.local_configured));
       setOpenRouterConfigured(Boolean(value.openrouter_configured)); setLocalEndpoint(value.local_endpoint || '');
       setLocalModel(value.local_model || ''); setVisionEndpoint(value.vision_endpoint || '');
@@ -152,19 +172,20 @@ function App() {
     const incoming = Array.from(event.target.files || []);
     event.target.value = '';
     const remaining = Math.max(0, maxUploadFiles - selectedFiles.length);
-    if (incoming.length > remaining) setError(`You can upload up to ${maxUploadFiles} photos at a time.`);
+    if (incoming.length > remaining) setError(`You can upload up to ${maxUploadFiles} files at a time.`);
     setSelectedFiles((old) => [...old, ...incoming.slice(0, remaining)]);
   };
 
   const openTrip = async (id) => {
     setError(''); setNotice(''); setBusy(true);
     try {
-      const [nextTrip, nextPhotos] = await Promise.all([api(`/api/v1/trips/${id}`), api(`/api/v1/trips/${id}/photos`)]);
+      const [nextTrip, nextPhotos, nextVideos] = await Promise.all([api(`/api/v1/trips/${id}`), api(`/api/v1/trips/${id}/photos`), api(`/api/v1/trips/${id}/videos`)]);
       let existingArticle = null;
       if (['EDITING', 'ARTICLE_APPROVED', 'EXPORTED_DRAFT'].includes(nextTrip.status)) {
         try { existingArticle = await api(`/api/v1/articles/art_${id}`); } catch { /* no saved article yet */ }
       }
-      setTrip(nextTrip); setPhotos(nextPhotos || []); setArticle(existingArticle); setPhotoFilter('all'); setFeaturePhotoID(nextTrip.feature_photo_id || ''); setScreen('trip');
+      setTrip(nextTrip); setPhotos(nextPhotos || []); setVideos(nextVideos || []); setArticle(existingArticle); setPhotoFilter('all'); setFeaturePhotoID(nextTrip.feature_photo_id || ''); setScreen('trip');
+      setVideoEditSettings(Object.fromEntries((nextVideos||[]).map((v)=>[v.id,{start:v.start_time||0,end:v.end_time||Math.min(videoDefaultDuration,v.source_duration||v.duration),profile:v.profile||'standard'}])));
       if (!existingArticle && nextPhotos?.length && nextPhotos.some((photo) => !photo.description)) {
         setBusy(true); setNotice('Describing your photos… This may take a few minutes.');
         try {
@@ -177,6 +198,33 @@ function App() {
       }
     } catch (e) { setError(e.message); }
     finally { setBusy(false); }
+  };
+
+  const setVideoSelected = async (video, selected) => {
+    try { await api(`/api/v1/trips/${trip.id}/videos/${video.id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({selected}) }); setVideos((items)=>items.map((v)=>v.id===video.id?{...v,selected}:v)); }
+    catch(e){setError(e.message);}
+  };
+
+  const reprocessVideo = async (video) => {
+    const settings=videoEditSettings[video.id]||{};setVideoProcessingID(video.id);setError('');setNotice(`Processing ${video.file_name}…`);
+    try{await api(`/api/v1/trips/${trip.id}/videos/${video.id}/process`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({start_time:Number(settings.start||0),end_time:Number(settings.end||0),profile:settings.profile||'standard'})});const updated=await api(`/api/v1/trips/${trip.id}/videos`);setVideos(updated||[]);setNotice('Video processed');setTimeout(()=>setNotice(''),1800);}
+    catch(e){setError(e.message);setNotice('');}
+    finally{setVideoProcessingID('');}
+  };
+
+  const addTripMedia = (event)=>{const added=Array.from(event.target.files||[]);event.target.value='';setTripMediaFiles((current)=>[...current,...added]);};
+  const uploadTripMedia = async()=>{
+    const bad=tripMediaFiles.find((file)=>isVideoFile(file)&&(tripMediaDurations[file.name]==null||(tripMediaTrims[file.name]?.end??0)<=(tripMediaTrims[file.name]?.start??0)||(tripMediaTrims[file.name]?.end??0)>tripMediaDurations[file.name]));
+    if(bad){setError(`Choose a valid trim range for ${bad.name}.`);return;}
+    setBusy(true);setNotice('Adding media to this trip…');setError('');
+    try{const data=new FormData();data.append('video_profile',videoProfile);tripMediaFiles.forEach((file)=>{data.append('files',file,file.name);if(isVideoFile(file)){const trim=tripMediaTrims[file.name]||{};data.append(`video_trim_${file.name}_start`,String(trim.start??0));data.append(`video_trim_${file.name}_end`,String(trim.end??tripMediaDurations[file.name]));}});await api(`/api/v1/trips/${trip.id}/photos/upload`,{method:'POST',body:data});const [nextPhotos,nextVideos]=await Promise.all([api(`/api/v1/trips/${trip.id}/photos`),api(`/api/v1/trips/${trip.id}/videos`)]);setPhotos(nextPhotos||[]);setVideos(nextVideos||[]);setTripMediaFiles([]);setTripMediaTrims({});setTripMediaDurations({});setNotice('Media added');setTimeout(()=>setNotice(''),1800);}
+    catch(e){setError(e.message);setNotice('');}finally{setBusy(false);}
+  };
+
+  const recordVideoDuration = (file, duration) => {
+    if (!Number.isFinite(duration) || duration <= 0) return;
+    setVideoDurations((current) => ({ ...current, [file.name]: duration }));
+    setVideoTrims((current) => current[file.name] ? current : ({ ...current, [file.name]: { start: 0, end: Math.min(videoDefaultDuration, duration) } }));
   };
 
   const setPhotoSelected = async (photo, selected) => {
@@ -198,22 +246,27 @@ function App() {
   };
 
   const uploadTrip = async (event) => {
-    event.preventDefault(); setError(''); setBusy(true); setNotice('Uploading and preparing your photos…');
+    event.preventDefault(); setError('');
+    const badVideo = selectedFiles.find((file)=>isVideoFile(file) && (videoDurations[file.name] == null || (videoTrims[file.name]?.start ?? -1) < 0 || (videoTrims[file.name]?.end ?? 0) <= (videoTrims[file.name]?.start ?? 0) || (videoTrims[file.name]?.end ?? 0) > videoDurations[file.name]));
+    if (badVideo) { setError(`Choose a valid start and end range within the duration of ${badVideo.name}.`); return; }
+    setBusy(true); setNotice('Uploading and preparing your photos and videos…');
     try {
       const data = new FormData();
       data.append('title', form.title.trim() || form.location.trim() || 'Untitled trip');
       data.append('location', form.location.trim()); data.append('notes', form.notes.trim());
+      data.append('video_profile', videoProfile);
       selectedFiles.forEach((file) => data.append('files', file, file.name));
+      selectedFiles.filter(isVideoFile).forEach((file) => { const trim=videoTrims[file.name]||{}; data.append(`video_trim_${file.name}_start`, String(trim.start ?? 0)); data.append(`video_trim_${file.name}_end`, String(trim.end ?? videoDurations[file.name])); });
       const created = await api('/api/v1/trips/import-upload', { method: 'POST', body: data });
-      setSelectedFiles([]); setForm({ title: '', location: '', notes: '' });
+      setSelectedFiles([]); setVideoTrims({}); setVideoDurations({}); setForm({ title: '', location: '', notes: '' });
       await loadTrips(); await openTrip(created.trip_id);
     } catch (e) { setError(e.message); }
     finally { setBusy(false); setNotice(''); }
   };
 
   const generate = async () => {
-    if (!trip || !photos.some((p) => p.status !== 'not_selected')) {
-      setError('Select at least one photo to create the draft.'); return;
+    if (!trip || (!photos.some((p) => p.status !== 'not_selected') && !videos.some((v)=>v.selected))) {
+      setError('Select at least one photo or video to create the draft.'); return;
     }
     setError(''); setBusy(true); setNotice('Writing your first draft… This can take a little while.');
     try {
@@ -259,7 +312,7 @@ function App() {
     setBusy(true); setError(''); setNotice('Sending draft to Ghost…');
     try {
       clearTimeout(saveTimer.current);
-      const finalDoc = { ...article, lexical: JSON.stringify(initialLexical(article, photos)) };
+      const finalDoc = { ...article, lexical: JSON.stringify(initialLexical(article, photos, videos)) };
       finalDoc.blocks = blocksFromLexical(JSON.parse(finalDoc.lexical), article.blocks);
       setArticle(finalDoc);
       await api(`/api/v1/articles/${article.article_id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(finalDoc) });
@@ -351,9 +404,11 @@ function App() {
   };
 
   const previewFiles = useMemo(() => selectedFiles.map((file) => ({ file, url: URL.createObjectURL(file) })), [selectedFiles]);
+  const tripPreviewFiles=useMemo(()=>tripMediaFiles.map((file)=>({file,url:URL.createObjectURL(file)})),[tripMediaFiles]);
   const recommendedPhotos = photos.filter((photo) => photo.status === 'recommended');
   const visiblePhotos = photoFilter === 'recommended' ? recommendedPhotos : photos;
   useEffect(() => () => previewFiles.forEach((item) => URL.revokeObjectURL(item.url)), [previewFiles]);
+  useEffect(() => () => tripPreviewFiles.forEach((item)=>URL.revokeObjectURL(item.url)),[tripPreviewFiles]);
 
   if (!authInfo) return <div className="app-shell"><main className="main-content"><p>Connecting to Yatra…</p></main></div>;
   if (!authInfo.authenticated) return <div className="app-shell"><main className="main-content"><section className="welcome"><p className="eyebrow">YATRA</p><h1>{authInfo.configured ? 'Welcome back' : 'Set up Yatra'}</h1><p className="intro">{authInfo.configured ? 'Enter your app password to continue.' : 'Create an app password to protect your photos, drafts, and settings.'}</p></section><section className="create-card"><form onSubmit={submitAuth}><label className="field">App password<input autoFocus type="password" autoComplete={authInfo.configured ? 'current-password' : 'new-password'} minLength={12} required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} /></label>{authError && <p className="message message-error" role="alert">{authError}</p>}<button className="button button-primary full-button" disabled={authBusy}>{authBusy ? 'Unlocking…' : authInfo.configured ? 'Unlock Yatra' : 'Create password'}</button></form></section></main></div>;
@@ -395,11 +450,12 @@ function App() {
           <form onSubmit={uploadTrip}>
             <div className="field-row"><label className="field">Post title<input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="A weekend in Goa" /></label><label className="field">Where did you go?<input required value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} placeholder="Goa, India" /></label></div>
             <label className="field">What do you remember?<textarea rows="4" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="The train ride, a meal you loved, a place you stumbled upon…" /></label>
-            <div className="upload-head"><div><label className="field-label">Choose photos</label><p className="field-help">JPG, PNG or HEIC. Up to {maxUploadFiles} photos per upload.</p></div><span className="photo-count">{selectedFiles.length} of {maxUploadFiles} selected</span></div>
-            <input ref={fileRef} className="file-input" type="file" multiple accept="image/*,.heic,.heif" onChange={addSelectedFiles} />
-            <button type="button" className="pick-button" disabled={selectedFiles.length >= maxUploadFiles} onClick={() => fileRef.current?.click()}><span className="plus">＋</span><span>{selectedFiles.length ? (selectedFiles.length >= maxUploadFiles ? 'Photo limit reached' : 'Add more photos') : 'Choose photos from this device'}</span></button>
-            {previewFiles.length > 0 && <div className="preview-grid">{previewFiles.map(({ file, url }, i) => <button className="local-photo" type="button" key={`${file.name}-${i}`} title={`Remove ${file.name}`} onClick={() => setSelectedFiles((items) => items.filter((_, index) => index !== i))}><img src={url} alt={file.name} /><span>×</span></button>)}</div>}
-            <button className="button button-primary full-button" disabled={busy || selectedFiles.length === 0}>{busy ? 'Preparing…' : `Upload ${selectedFiles.length || ''} ${selectedFiles.length === 1 ? 'photo' : 'photos'} and review`}</button>
+            <div className="field-row"><label className="field">Video export profile<select value={videoProfile} onChange={(e)=>setVideoProfile(e.target.value)}><option value="standard">Standard · up to 1920 × 1080</option><option value="lightweight">Lightweight · up to 1280 × 720</option></select><span className="field-help">Default selection is six seconds. There is no duration cap.</span></label></div>
+            <div className="upload-head"><div><label className="field-label">Choose photos and videos</label><p className="field-help">JPG, PNG, HEIC, MP4, MOV or WebM. Trim every video to the section you want; the default is the first {videoDefaultDuration} seconds.</p></div><span className="photo-count">{selectedFiles.length} of {maxUploadFiles} selected</span></div>
+            <input ref={fileRef} className="file-input" type="file" multiple accept="image/*,video/*,.heic,.heif" onChange={addSelectedFiles} />
+            <button type="button" className="pick-button" disabled={selectedFiles.length >= maxUploadFiles} onClick={() => fileRef.current?.click()}><span className="plus">＋</span><span>{selectedFiles.length ? 'Add more media' : 'Choose media from this device'}</span></button>
+            {previewFiles.length > 0 && <div className="preview-grid">{previewFiles.map(({ file, url }, i) => <div className="local-photo" key={`${file.name}-${i}`}>{isVideoFile(file) ? <><video src={url} controls muted playsInline {...trimPreviewProps(videoTrims[file.name]?.start??0,videoTrims[file.name]?.end??videoDefaultDuration,(duration)=>recordVideoDuration(file,duration))} /><strong>{file.name}</strong>{videoDurations[file.name] > 0 && <div className="video-trim"><label>Start (seconds)<input aria-label={`Start time in seconds for ${file.name}`} type="number" min="0" max={Math.max(0,videoDurations[file.name]-0.1)} step="0.1" value={videoTrims[file.name]?.start ?? 0} onChange={(e)=>setVideoTrims((t)=>({...t,[file.name]:{...t[file.name],start:Number(e.target.value)}}))}/></label><label>End (seconds)<input aria-label={`End time in seconds for ${file.name}`} type="number" min="0.1" max={videoDurations[file.name]} step="0.1" value={videoTrims[file.name]?.end ?? Math.min(videoDefaultDuration,videoDurations[file.name])} onChange={(e)=>setVideoTrims((t)=>({...t,[file.name]:{...t[file.name],end:Number(e.target.value)}}))}/></label><span>{Math.max(0,(videoTrims[file.name]?.end ?? Math.min(videoDefaultDuration,videoDurations[file.name]))-(videoTrims[file.name]?.start ?? 0)).toFixed(1)} sec</span></div>}</> : <img src={url} alt={file.name} />}<button type="button" className="remove-local-photo" title={`Remove ${file.name}`} onClick={()=>setSelectedFiles((items)=>items.filter((_,index)=>index!==i))}>×</button></div>)}</div>}
+            <button className="button button-primary full-button" disabled={busy || selectedFiles.length === 0}>{busy ? 'Preparing…' : `Upload ${selectedFiles.length || ''} ${selectedFiles.length === 1 ? 'file' : 'files'} and review`}</button>
           </form>
         </section>
         {trips?.length > 0 && <section className="recent-section"><div className="section-title"><div><p className="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2>Your stories</h2></div></div><div className="trip-list">{trips.map((item) => <div key={item.id} className="trip-row"><button className="trip-open-button" onClick={() => openTrip(item.id)}><span><strong>{item.name}</strong><small>{item.location || 'Travel story'} · {new Date(item.updated_at).toLocaleDateString()}</small></span><span className="trip-status">{item.status.toLowerCase().replaceAll('_', ' ')}</span><span className="arrow">→</span></button><button className="trip-delete-button" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={(event) => deleteTrip(event, item)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M8 5.5V3.8h4v1.7m-6.5 0 .8 10.7h7.4l.8-10.7M8.2 8.2v5.5m3.6-5.5v5.5" /></svg></button></div>)}</div></section>}
@@ -453,16 +509,18 @@ function App() {
 
       {screen === 'trip' && trip && <>
         <button className="back-link" onClick={() => setScreen('home')}>← All stories</button>
-        <section className="trip-heading"><p className="eyebrow">{trip.location || 'YOUR TRIP'}</p><h1>{trip.name}</h1><p className="intro">Choose the photos that tell the story. We’ll use your notes and destination to write a first draft.</p></section>
+        <section className="trip-heading"><p className="eyebrow">{trip.location || 'YOUR TRIP'}</p><h1>{trip.name}</h1><p className="intro">Choose the photos and clips that tell the story. We’ll use your notes and destination to write a first draft.</p></section>
         {trip.notes && <section className="notes-card"><p className="eyebrow">YOUR NOTES</p><p>{trip.notes}</p></section>}
         {article ? <button className="button button-primary" onClick={openEditor}>Continue editing this draft</button> : <>
-          <div className="review-toolbar"><div><h2>Photo review</h2><p>{photos.filter((p) => p.status !== 'not_selected').length} of {photos.length} selected</p><p className="field-help">Choose the photos for your story. Tap the star on a photo to use it as the post header image.</p></div><div className="review-tools"><button className="text-button" onClick={async () => { const next = photos.map((p) => ({ ...p, status: 'recommended' })); setPhotos(next); try { await api(`/api/v1/trips/${trip.id}/photos/select-all`, { method: 'POST' }); } catch (e) { setError(e.message); try { setPhotos(await api(`/api/v1/trips/${trip.id}/photos`)); } catch { /* retain optimistic state if refresh fails */ } } }}>Select all</button></div></div>
+          <div className="review-toolbar"><div><h2>Media review</h2><p>{photos.filter((p) => p.status !== 'not_selected').length + videos.filter((v)=>v.selected).length} selected</p><p className="field-help">Choose photos and videos for your story. Tap the star on a photo to use it as the post header image.</p></div><div className="review-tools"><button className="text-button" onClick={async () => { const next = photos.map((p) => ({ ...p, status: 'recommended' })); setPhotos(next); try { await api(`/api/v1/trips/${trip.id}/photos/select-all`, { method: 'POST' }); } catch (e) { setError(e.message); try { setPhotos(await api(`/api/v1/trips/${trip.id}/photos`)); } catch { /* retain optimistic state if refresh fails */ } } }}>Select all photos</button><input ref={tripMediaRef} className="file-input" type="file" multiple accept="image/*,video/*,.heic,.heif" onChange={addTripMedia}/><button type="button" className="text-button" onClick={()=>tripMediaRef.current?.click()}>Add photos or videos</button></div></div>
+          {tripPreviewFiles.length>0&&<section className="create-card"><h3>New media</h3><div className="preview-grid">{tripPreviewFiles.map(({file,url},i)=><div className="local-photo" key={`${file.name}-${i}`}>{isVideoFile(file)?<><video src={url} controls muted playsInline {...trimPreviewProps(tripMediaTrims[file.name]?.start??0,tripMediaTrims[file.name]?.end??videoDefaultDuration,(duration)=>{setTripMediaDurations(d=>({...d,[file.name]:duration}));setTripMediaTrims(t=>t[file.name]?t:{...t,[file.name]:{start:0,end:Math.min(videoDefaultDuration,duration)}});})}/><strong>{file.name}</strong>{tripMediaDurations[file.name]>0&&<div className="video-trim"><label>Start (sec)<input type="number" min="0" step="0.1" value={tripMediaTrims[file.name]?.start??0} onChange={(e)=>setTripMediaTrims(t=>({...t,[file.name]:{...t[file.name],start:Number(e.target.value)}}))}/></label><label>End (sec)<input type="number" min="0.1" max={tripMediaDurations[file.name]} step="0.1" value={tripMediaTrims[file.name]?.end??Math.min(videoDefaultDuration,tripMediaDurations[file.name])} onChange={(e)=>setTripMediaTrims(t=>({...t,[file.name]:{...t[file.name],end:Number(e.target.value)}}))}/></label></div>}</>:<img src={url} alt={file.name}/>}<button type="button" className="remove-local-photo" onClick={()=>setTripMediaFiles(list=>list.filter((_,index)=>index!==i))}>×</button></div>)}</div><label className="field">Video export profile<select value={videoProfile} onChange={e=>setVideoProfile(e.target.value)}><option value="standard">Standard</option><option value="lightweight">Lightweight</option></select></label><button type="button" className="button button-primary" disabled={busy} onClick={uploadTripMedia}>{busy?'Processing…':'Upload to this trip'}</button></section>}
           <div className="photo-filters" role="group" aria-label="Filter photos">
             <button type="button" className={photoFilter === 'all' ? 'active' : ''} onClick={() => setPhotoFilter('all')}>All photos ({photos.length})</button>
             <button type="button" className={photoFilter === 'recommended' ? 'active' : ''} onClick={() => setPhotoFilter('recommended')}>Recommended ({recommendedPhotos.length})</button>
           </div>
           <div className="photo-grid">{visiblePhotos.map((photo) => { const chosen = photo.status !== 'not_selected'; const isFeature = featurePhotoID === photo.id; return <div key={photo.id} className="photo-tile"><button className={`photo-card ${chosen ? 'chosen' : ''}`} onClick={() => setPhotoSelected(photo, !chosen)} aria-pressed={chosen} title={photo.description || undefined}><span className="photo-image"><img src={photo.thumbnail} alt={photo.description || 'Trip photo'} loading="lazy" /><span className="photo-check">{chosen ? '✓' : '+'}</span></span>{photo.description && <span className="photo-description">{photo.description}</span>}</button><button className={`photo-feature-button ${isFeature ? 'active' : ''}`} onClick={() => chooseFeaturePhoto(photo)} aria-label={isFeature ? 'Header image selected' : 'Use as post header image'} aria-pressed={isFeature} title={isFeature ? 'Header image' : 'Use as post header image'}>{isFeature ? '★' : '☆'}</button></div>; })}</div>
-          <button className="button button-primary full-button draft-button" disabled={busy || photos.length === 0} onClick={generate}>{busy ? 'Writing your draft…' : 'Create my draft'}<span>→</span></button>
+          {videos.length > 0 && <><h3 className="video-review-title">Video clips</h3><div className="video-review-grid">{videos.map((video)=>{const edit=videoEditSettings[video.id]||{};return <div key={video.id} className={`video-review-card ${video.selected?'chosen':''}`}><video src={video.url} poster={video.poster_url} controls muted playsInline preload="none" /><span>{video.file_name} · {video.duration.toFixed(1)} sec · {video.profile} · {(video.source_bytes/1048576).toFixed(1)} → {(video.output_bytes/1048576).toFixed(1)} MB ({video.output_bytes&&video.source_bytes?Math.max(0,Math.round((1-video.output_bytes/video.source_bytes)*100)):0}% smaller)</span><small>Original: {video.source_width}×{video.source_height} · {video.source_codec} · {video.source_has_audio?'has audio (removed)':'silent'}</small>{video.status==='failed'&&<small role="alert">Processing failed: {video.error}</small>}{video.status==='processing'&&<small>Processing…</small>}<div className="video-trim"><label>Start (sec)<input type="number" min="0" max={Math.max(0,(video.source_duration||video.duration)-0.1)} step="0.1" value={edit.start??video.start_time??0} onChange={(e)=>setVideoEditSettings((all)=>({...all,[video.id]:{...edit,start:Number(e.target.value)}}))}/></label><label>End (sec)<input type="number" min="0.1" max={video.source_duration||video.duration} step="0.1" value={edit.end??video.end_time??video.duration} onChange={(e)=>setVideoEditSettings((all)=>({...all,[video.id]:{...edit,end:Number(e.target.value)}}))}/></label></div><label className="field">Export profile<select value={edit.profile||video.profile||'standard'} onChange={(e)=>setVideoEditSettings((all)=>({...all,[video.id]:{...edit,profile:e.target.value}}))}><option value="standard">Standard</option><option value="lightweight">Lightweight</option></select></label><span>Selected duration: {Math.max(0,(edit.end??video.end_time??video.duration)-(edit.start??video.start_time??0)).toFixed(1)} sec</span><button type="button" disabled={videoProcessingID===video.id||video.status==='processing'} onClick={()=>reprocessVideo(video)}>{videoProcessingID===video.id?'Processing…':'Preview / reprocess'}</button><button type="button" onClick={()=>setVideoSelected(video,!video.selected)} aria-pressed={video.selected}>{video.selected?'Remove from draft':'Include in draft'}</button></div>})}</div></>}
+          <button className="button button-primary full-button draft-button" disabled={busy || (photos.length === 0 && videos.length === 0)} onClick={generate}>{busy ? 'Writing your draft…' : 'Create my draft'}<span>→</span></button>
         </>}
       </>}
 
@@ -472,7 +530,7 @@ function App() {
         {article.research_summary && <details className="research-card"><summary>Place background used in this draft</summary><p>{article.research_summary}</p>{article.research_sources?.map((source) => <a key={source} href={source} target="_blank" rel="noreferrer">{new URL(source).hostname}</a>)}</details>}
         <article className="article-editor"><label className="field title-field">Post title<input value={article.title} onChange={(e) => { const next = { ...article, title: e.target.value, slug: e.target.value.toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') }; setArticle(next); clearTimeout(saveTimer.current); saveTimer.current = setTimeout(() => api(`/api/v1/articles/${article.article_id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) }).then(() => setNotice('Saved')).catch((err) => setError(err.message)), 850); }} /></label>
           <React.Suspense fallback={<div className="editor-loading">Opening the editor…</div>}>
-            <WritingEditor key={article.article_id} initialEditorState={initialLexical(article, photos)} fileUploader={editorFileUploader} onChange={saveArticle} />
+            <WritingEditor key={article.article_id} initialEditorState={initialLexical(article, photos, videos)} fileUploader={editorFileUploader} onChange={saveArticle} />
           </React.Suspense>
         </article>
       </>}
