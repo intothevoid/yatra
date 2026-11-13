@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"html"
+	"image"
 	"regexp"
 	"strings"
 
@@ -17,7 +18,15 @@ func plainCaption(s string) string {
 
 // Keep pictures within their story section. Like the Goa reference, use a
 // large lead photograph followed by pairs or a four-image mosaic.
-func storyPhotoLayout(blocks []domain.ArticleBlock) []domain.ArticleBlock {
+func storyPhotoLayout(blocks []domain.ArticleBlock, dimensionSets ...map[string]image.Point) []domain.ArticleBlock {
+	dimensions := map[string]image.Point{}
+	if len(dimensionSets) > 0 && dimensionSets[0] != nil {
+		dimensions = dimensionSets[0]
+	}
+	isPortrait := func(id string) bool {
+		size := dimensions[id]
+		return size.X > 0 && size.Y > size.X
+	}
 	var out []domain.ArticleBlock
 	sequence := 0
 	flush := func(section []domain.ArticleBlock) {
@@ -38,11 +47,20 @@ func storyPhotoLayout(blocks []domain.ArticleBlock) []domain.ArticleBlock {
 		var cards []domain.ArticleBlock
 		for len(photos) > 0 {
 			sequence++
+			landscapeRun := 0
+			for _, photo := range photos {
+				if isPortrait(photo.PhotoIDs[0]) {
+					break
+				}
+				landscapeRun++
+			}
 			size := 1
-			if len(cards) > 0 || len(photos) == 2 {
-				if len(photos) >= 4 {
+			if !isPortrait(photos[0].PhotoIDs[0]) {
+				if len(cards) == 0 && len(photos) != 2 {
+					size = 1
+				} else if landscapeRun >= 4 {
 					size = 4
-				} else if len(photos) >= 2 {
+				} else if landscapeRun >= 2 {
 					size = 2
 				}
 			}

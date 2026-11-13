@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"time"
+	"strings"
 
 	"github.com/karan/travel-diary/internal/config"
 	"github.com/karan/travel-diary/internal/domain"
@@ -16,11 +16,11 @@ import (
 
 // OpenAIVisionAdapter sends images to an OpenAI-compatible endpoint.
 type OpenAIVisionAdapter struct {
-	BaseURL  string
-	Model    string
-	APIKey   string
-	Timeout  time.Duration
-	HTTP     *http.Client
+	BaseURL string
+	Model   string
+	APIKey  string
+	Timeout *config.ModelTimeout
+	HTTP    *http.Client
 }
 
 // Analyze sends an image to the VLM and returns a structured result.
@@ -48,7 +48,7 @@ func (a *OpenAIVisionAdapter) Analyze(ctx context.Context, photoID string, image
 		"response_format": map[string]any{
 			"type": "json_schema",
 			"json_schema": map[string]any{
-				"name": "vision_analysis",
+				"name":   "vision_analysis",
 				"schema": visionSchema(),
 			},
 		},
@@ -59,7 +59,13 @@ func (a *OpenAIVisionAdapter) Analyze(ctx context.Context, photoID string, image
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", a.BaseURL+"/chat/completions", bytes.NewReader(body))
+	requestCtx := ctx
+	cancel := func() {}
+	if timeout := a.Timeout.Duration(); timeout > 0 {
+		requestCtx, cancel = context.WithTimeout(ctx, timeout)
+	}
+	defer cancel()
+	req, err := http.NewRequestWithContext(requestCtx, "POST", a.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -76,7 +82,11 @@ func (a *OpenAIVisionAdapter) Analyze(ctx context.Context, photoID string, image
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, string(respBody))
+		message := string(respBody)
+		if a.APIKey != "" {
+			message = strings.ReplaceAll(message, a.APIKey, "[redacted]")
+		}
+		return nil, fmt.Errorf("API error %d: %s", resp.StatusCode, message)
 	}
 
 	var apiResp struct {
@@ -149,13 +159,23 @@ func visionSchema() map[string]any {
 
 // NewOpenAIVisionAdapter creates a vision adapter from config.
 func NewOpenAIVisionAdapter(cfg *config.Config) *OpenAIVisionAdapter {
+	baseURL := cfg.OMLXVisionBaseURL
+	if baseURL == "" {
+		baseURL = cfg.OMLXBaseURL
+	}
+	model := cfg.OMLXVisionModel
+	if model == "" {
+		model = cfg.OMLXWriterModel
+	}
+	return NewOpenAIVisionAdapterForEndpoint(baseURL, model, cfg.OMLXAPIKey, cfg.ModelTimeout)
+}
+
+func NewOpenAIVisionAdapterForEndpoint(baseURL, model, apiKey string, timeout *config.ModelTimeout) *OpenAIVisionAdapter {
 	return &OpenAIVisionAdapter{
-		BaseURL: cfg.OMLXBaseURL,
-		Model:   cfg.OMLXVisionModel,
-		APIKey:  cfg.OMLXAPIKey,
-		Timeout: time.Duration(cfg.OMLXTimeoutSec) * time.Second,
-		HTTP: &http.Client{
-			Timeout: time.Duration(cfg.OMLXTimeoutSec) * time.Second,
-		},
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		Model:   model,
+		APIKey:  apiKey,
+		Timeout: timeout,
+		HTTP:    &http.Client{},
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os/signal"
+	"strconv"
 	"syscall"
 
 	"github.com/karan/travel-diary/internal/adapters"
@@ -30,6 +31,34 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	defer s.Close()
+	if timeoutSetting, ok, err := s.Settings.Get(ctx, store.ModelTimeoutSettingKey); err != nil {
+		log.Fatalf("load model timeout setting: %v", err)
+	} else if ok {
+		seconds, parseErr := strconv.ParseInt(timeoutSetting, 10, 64)
+		if parseErr != nil || cfg.ModelTimeout.SetSeconds(seconds) != nil {
+			log.Printf("ignoring invalid saved model timeout setting")
+		}
+	}
+	if endpoint, ok, err := s.Settings.Get(ctx, store.LocalModelEndpointSettingKey); err != nil {
+		log.Fatalf("load local model endpoint setting: %v", err)
+	} else if ok && endpoint != "" {
+		cfg.OMLXWriterBaseURL = endpoint
+	}
+	if model, ok, err := s.Settings.Get(ctx, store.LocalModelIDSettingKey); err != nil {
+		log.Fatalf("load local model ID setting: %v", err)
+	} else if ok && model != "" {
+		cfg.OMLXWriterModel = model
+	}
+	if endpoint, ok, err := s.Settings.Get(ctx, store.VisionModelEndpointSettingKey); err != nil {
+		log.Fatalf("load vision model endpoint setting: %v", err)
+	} else if ok && endpoint != "" {
+		cfg.OMLXVisionBaseURL = endpoint
+	}
+	if model, ok, err := s.Settings.Get(ctx, store.VisionModelIDSettingKey); err != nil {
+		log.Fatalf("load vision model ID setting: %v", err)
+	} else if ok && model != "" {
+		cfg.OMLXVisionModel = model
+	}
 
 	// Create adapters
 	proc := &adapters.SystemImageProcessor{
@@ -37,18 +66,16 @@ func main() {
 		Vips: &adapters.VipsProcessor{ThumbnailSize: cfg.ThumbnailSize, PreviewSize: cfg.PreviewSize, ExportSize: cfg.ExportSize, JPEGQuality: cfg.JPEGQuality},
 	}
 	var vlm adapters.VLMAdapter = &adapters.FakeVLMAdapter{}
-	if cfg.OMLXAPIKey != "" {
-		visionModel := cfg.OMLXVisionModel
-		if visionModel == "" {
-			visionModel = cfg.OMLXWriterModel
-		}
-		if visionModel != "" {
-			vlm = adapters.NewOpenAIVisionAdapter(cfg)
-			vlm.(*adapters.OpenAIVisionAdapter).Model = visionModel
-		}
+	visionModel := cfg.OMLXVisionModel
+	if visionModel == "" {
+		visionModel = cfg.OMLXWriterModel
+	}
+	if visionModel != "" {
+		vlm = adapters.NewOpenAIVisionAdapter(cfg)
+		vlm.(*adapters.OpenAIVisionAdapter).Model = visionModel
 	}
 	var text adapters.TextAdapter = adapters.FakeTextAdapter{}
-	if cfg.OMLXAPIKey != "" && cfg.OMLXWriterModel != "" {
+	if cfg.OMLXWriterModel != "" {
 		text = adapters.NewOpenAITextAdapter(cfg)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 
+	"github.com/karan/travel-diary/internal/adapters"
 	"github.com/karan/travel-diary/internal/config"
 	"github.com/karan/travel-diary/internal/domain"
 	"github.com/karan/travel-diary/internal/services"
@@ -33,13 +35,13 @@ type App struct {
 
 // NewApp creates a new application.
 func NewApp(cfg *config.Config, s *store.Store, imp *services.Importer, gen *services.Genie, exp *services.GhostExporter) *App {
+	cfg.EnsureModelTimeout()
 	return &App{cfg: cfg, store: s, importer: imp, genie: gen, exporter: exp, auth: NewAuthManager(cfg)}
 }
 
 // Router returns the chi router with all routes registered.
 func (a *App) Router() http.Handler {
 	r := chi.NewRouter()
-	r.Use(a.auth.Middleware)
 	r.Use(middleware.RequestID)
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
@@ -49,6 +51,7 @@ func (a *App) Router() http.Handler {
 		AllowedMethods: []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type"},
 	}))
+	r.Use(a.auth.Middleware)
 
 	r.Get("/health/live", a.healthLive)
 	r.Get("/health/ready", a.healthReady)
@@ -57,6 +60,13 @@ func (a *App) Router() http.Handler {
 	r.Post("/api/v1/auth/setup", a.auth.setup)
 	r.Post("/api/v1/auth/login", a.auth.login)
 	r.Post("/api/v1/auth/logout", a.auth.logout)
+	r.Get("/api/v1/settings", a.publicSettings)
+	r.Put("/api/v1/settings/model", a.configureModel)
+	r.Post("/api/v1/settings/model/activate", a.activateModel)
+	r.Delete("/api/v1/settings/model", a.resetModel)
+	r.Put("/api/v1/settings/vision", a.configureVisionModel)
+	r.Put("/api/v1/settings/timeout", a.configureModelTimeout)
+	r.Delete("/api/v1/settings/timeout", a.resetModelTimeout)
 
 	r.Get("/api/v1/trips", a.listTrips)
 	r.Delete("/api/v1/trips/{id}", a.deleteTrip)
@@ -92,6 +102,186 @@ func (a *App) Router() http.Handler {
 	r.Handle("/vite.svg", http.FileServer(http.FS(staticFS)))
 
 	return r
+}
+
+func (a *App) publicSettings(w http.ResponseWriter, r *http.Request) {
+	maxUploadFiles := a.cfg.MaxUploadFiles
+	if maxUploadFiles <= 0 {
+		maxUploadFiles = 200
+	}
+	_, hasUIOverride, err := a.store.Settings.Get(r.Context(), store.ModelTimeoutSettingKey)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "settings_unavailable", "could not load model settings")
+		return
+	}
+	timeoutSource := "unset"
+	if a.cfg.OMLXTimeoutSec > 0 {
+		timeoutSource = "env"
+	}
+	if hasUIOverride {
+		timeoutSource = "settings"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	modelSettings := a.genie.TextProviderStatus()
+	json.NewEncoder(w).Encode(map[string]any{
+		"max_upload_files":      maxUploadFiles,
+		"model_provider":        modelSettings.Provider,
+		"model":                 modelSettings.Model,
+		"model_endpoint":        modelSettings.Endpoint,
+		"model_configured":      modelSettings.Provider == "openrouter" || modelSettings.Provider == "local",
+		"local_model":           modelSettings.LocalModel,
+		"local_endpoint":        modelSettings.LocalEndpoint,
+		"local_configured":      modelSettings.LocalConfigured,
+		"openrouter_model":      modelSettings.OpenRouterModel,
+		"openrouter_configured": modelSettings.OpenRouterConfigured,
+		"vision_model":          modelSettings.VisionModel,
+		"vision_endpoint":       modelSettings.VisionEndpoint,
+		"vision_configured":     modelSettings.VisionConfigured,
+		"model_timeout_sec":     a.cfg.ModelTimeout.Seconds(),
+		"timeout_source":        timeoutSource,
+	})
+}
+
+func (a *App) configureModelTimeout(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	var req struct {
+		Seconds int64 `json:"seconds"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "bad_request", "invalid timeout settings")
+		return
+	}
+	previous := a.cfg.ModelTimeout.Seconds()
+	if err := a.cfg.ModelTimeout.SetSeconds(req.Seconds); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_timeout", err.Error())
+		return
+	}
+	if err := a.store.Settings.Set(r.Context(), store.ModelTimeoutSettingKey, fmt.Sprint(req.Seconds)); err != nil {
+		_ = a.cfg.ModelTimeout.SetSeconds(previous)
+		writeAPIError(w, http.StatusInternalServerError, "settings_save_failed", "could not save timeout setting")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"model_timeout_sec": req.Seconds, "timeout_source": "settings"})
+}
+
+func (a *App) resetModelTimeout(w http.ResponseWriter, r *http.Request) {
+	baselineSeconds := int64(a.cfg.OMLXTimeoutSec)
+	if baselineSeconds < 0 {
+		baselineSeconds = 0
+	}
+	previous := a.cfg.ModelTimeout.Seconds()
+	if err := a.cfg.ModelTimeout.SetSeconds(baselineSeconds); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "invalid_env_timeout", "OMLX_TIMEOUT_SEC must be a non-negative number of seconds")
+		return
+	}
+	if err := a.store.Settings.Delete(r.Context(), store.ModelTimeoutSettingKey); err != nil {
+		_ = a.cfg.ModelTimeout.SetSeconds(previous)
+		writeAPIError(w, http.StatusInternalServerError, "settings_reset_failed", "could not reset timeout setting")
+		return
+	}
+	source := "unset"
+	if a.cfg.OMLXTimeoutSec > 0 {
+		source = "env"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{"model_timeout_sec": a.cfg.ModelTimeout.Seconds(), "timeout_source": source})
+}
+
+func (a *App) configureModel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+	var req struct {
+		Provider string `json:"provider"`
+		Endpoint string `json:"endpoint"`
+		Model    string `json:"model"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "bad_request", "invalid settings request")
+		return
+	}
+	switch req.Provider {
+	case "openrouter":
+		if err := a.genie.ConfigureOpenRouter(req.Model, req.APIKey); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_settings", err.Error())
+			return
+		}
+	case "local":
+		if err := a.genie.ConfigureLocalModel(req.Endpoint, req.Model, req.APIKey); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_settings", err.Error())
+			return
+		}
+		if err := a.store.Settings.Set(r.Context(), store.LocalModelEndpointSettingKey, strings.TrimRight(strings.TrimSpace(req.Endpoint), "/")); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "settings_save_failed", "could not save local model endpoint")
+			return
+		}
+		if err := a.store.Settings.Set(r.Context(), store.LocalModelIDSettingKey, strings.TrimSpace(req.Model)); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "settings_save_failed", "could not save local model ID")
+			return
+		}
+	default:
+		writeAPIError(w, http.StatusBadRequest, "unsupported_provider", "choose a local OpenAI-compatible endpoint or OpenRouter")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.genie.TextProviderStatus())
+}
+
+func (a *App) activateModel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 2048)
+	var req struct {
+		Provider string `json:"provider"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "bad_request", "invalid provider selection")
+		return
+	}
+	if err := a.genie.ActivateTextProvider(req.Provider); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "provider_unavailable", err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.genie.TextProviderStatus())
+}
+
+func (a *App) configureVisionModel(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 16*1024)
+	var req struct {
+		Endpoint string `json:"endpoint"`
+		Model    string `json:"model"`
+		APIKey   string `json:"api_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "bad_request", "invalid vision settings")
+		return
+	}
+	if err := a.genie.ConfigureVisionModel(req.Endpoint, req.Model, req.APIKey); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_vision_settings", err.Error())
+		return
+	}
+	endpoint := strings.TrimRight(strings.TrimSpace(req.Endpoint), "/")
+	if err := a.store.Settings.Set(r.Context(), store.VisionModelEndpointSettingKey, endpoint); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "settings_save_failed", "could not save vision endpoint")
+		return
+	}
+	if err := a.store.Settings.Set(r.Context(), store.VisionModelIDSettingKey, strings.TrimSpace(req.Model)); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "settings_save_failed", "could not save vision model ID")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.genie.TextProviderStatus())
+}
+
+func (a *App) resetModel(w http.ResponseWriter, r *http.Request) {
+	a.genie.ResetTextProvider()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.genie.TextProviderStatus())
+}
+
+func writeAPIError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	json.NewEncoder(w).Encode(apiErr(code, message))
 }
 
 // healthLive returns 200 if the process is running.
@@ -264,6 +454,8 @@ func (a *App) listPhotos(w http.ResponseWriter, r *http.Request) {
 		Status      domain.PhotoStatus `json:"status"`
 		Thumbnail   string             `json:"thumbnail"`
 		Description string             `json:"description,omitempty"`
+		Width       int                `json:"width,omitempty"`
+		Height      int                `json:"height,omitempty"`
 	}
 	views := make([]photoView, 0, len(photos))
 	for _, p := range photos {
@@ -274,7 +466,15 @@ func (a *App) listPhotos(w http.ResponseWriter, r *http.Request) {
 				description = result.Observed.Description
 			}
 		}
-		views = append(views, photoView{ID: p.ID, Status: p.Status, Thumbnail: "/api/v1/photos/" + p.ID + "/thumbnail", Description: description})
+		previewPath := p.PreviewPath
+		if previewPath == "" {
+			previewPath = p.ThumbnailPath
+		}
+		width, height, dimErr := adapters.ImageDimensions(previewPath)
+		if dimErr != nil {
+			width, height, _ = adapters.ImageDimensions(p.ThumbnailPath)
+		}
+		views = append(views, photoView{ID: p.ID, Status: p.Status, Thumbnail: "/api/v1/photos/" + p.ID + "/thumbnail", Description: description, Width: width, Height: height})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(views)

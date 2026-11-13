@@ -32,8 +32,24 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [activeJobID, setActiveJobID] = useState('');
+  const [stopPending, setStopPending] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [maxUploadFiles, setMaxUploadFiles] = useState(200);
+  const [modelProvider, setModelProvider] = useState('fake');
+  const [localConfigured, setLocalConfigured] = useState(false);
+  const [openRouterConfigured, setOpenRouterConfigured] = useState(false);
+  const [localEndpoint, setLocalEndpoint] = useState('');
+  const [localModel, setLocalModel] = useState('');
+  const [localKey, setLocalKey] = useState('');
+  const [visionEndpoint, setVisionEndpoint] = useState('');
+  const [visionModel, setVisionModel] = useState('');
+  const [visionKey, setVisionKey] = useState('');
+  const [visionConfigured, setVisionConfigured] = useState(false);
+  const [openRouterModel, setOpenRouterModel] = useState('');
+  const [openRouterKey, setOpenRouterKey] = useState('');
+  const [modelTimeoutSeconds, setModelTimeoutSeconds] = useState('');
+  const [timeoutSource, setTimeoutSource] = useState('unset');
   const [photoFilter, setPhotoFilter] = useState('all');
   const [featurePhotoID, setFeaturePhotoID] = useState('');
   const [form, setForm] = useState({ title: '', location: '', notes: '' });
@@ -80,7 +96,8 @@ function App() {
     stream.addEventListener('progress', (event) => {
       try {
         const status = JSON.parse(event.data);
-        setNotice(status.progress ? `${label} · ${status.progress}%` : (status.step || label));
+        if (status.step?.includes('generated') || status.step?.includes('waiting for the model')) setNotice(status.step);
+        else setNotice(status.progress ? `${label} · ${status.progress}%${status.step ? ` · ${status.step}` : ''}` : (status.step || label));
       } catch { /* ignore malformed progress */ }
     });
     stream.addEventListener('complete', (event) => {
@@ -96,14 +113,14 @@ function App() {
 
   const refreshAuth = useCallback(async () => setAuthInfo(await api('/api/v1/auth/status')), []);
   const loadSettings = async () => {
-    const value = await api('/api/v1/settings');
+    const value = await api('/api/v1/app-settings');
     setSettings(value);
     return value;
   };
   const saveSettings = async (event) => {
     event.preventDefault(); setSettingsBusy(true); setError(''); setNotice('Saving settings…');
     try {
-      const saved = await api('/api/v1/settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+      const saved = await api('/api/v1/app-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
       setSettings(saved); if (saved?.max_upload_files > 0) setMaxUploadFiles(saved.max_upload_files); setNotice('Settings saved and active'); setTimeout(() => setNotice(''), 2400);
     } catch (e) { setError(e.message); setNotice(''); }
     finally { setSettingsBusy(false); }
@@ -115,7 +132,20 @@ function App() {
     finally { setAuthBusy(false); }
   };
   useEffect(() => { refreshAuth().catch(() => setAuthError('Could not connect to Yatra.')); }, [refreshAuth]);
-  useEffect(() => { if (authInfo?.authenticated) { loadTrips().catch((e) => setError(e.message)); loadSettings().then((value) => { if (value?.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files); }).catch((e) => setError(e.message)); } }, [authInfo?.authenticated, loadTrips]);
+  useEffect(() => {
+    if (!authInfo?.authenticated) return;
+    loadTrips().catch((e) => setError(e.message));
+    loadSettings().then((value) => { if (value?.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files); }).catch((e) => setError(e.message));
+    api('/api/v1/settings').then((value) => {
+      if (value.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files);
+      setModelProvider(value.model_provider || 'fake'); setLocalConfigured(Boolean(value.local_configured));
+      setOpenRouterConfigured(Boolean(value.openrouter_configured)); setLocalEndpoint(value.local_endpoint || '');
+      setLocalModel(value.local_model || ''); setVisionEndpoint(value.vision_endpoint || '');
+      setVisionModel(value.vision_model || ''); setVisionConfigured(Boolean(value.vision_configured));
+      setOpenRouterModel(value.openrouter_model || (value.model_provider === 'openrouter' ? value.model : ''));
+      setModelTimeoutSeconds(String(value.model_timeout_sec ?? '')); setTimeoutSource(value.timeout_source || 'unset');
+    }).catch((e) => setError(e.message));
+  }, [authInfo?.authenticated, loadTrips]);
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
   const addSelectedFiles = (event) => {
@@ -188,11 +218,22 @@ function App() {
     setError(''); setBusy(true); setNotice('Writing your first draft… This can take a little while.');
     try {
       const job = await api(`/api/v1/trips/${trip.id}/generate`, { method: 'POST' });
+      setActiveJobID(job.job_id); setStopPending(false);
       await waitForJob(job.job_id, 'Writing your draft');
       const doc = await api(`/api/v1/articles/art_${trip.id}`);
       setArticle(doc); setScreen('editor');
-    } catch (e) { setError(e.message); }
-    finally { setBusy(false); setNotice(''); }
+    } catch (e) {
+      if (e.message === 'Generation cancelled') setNotice('Generation stopped. You can start it again.');
+      else setError(e.message);
+    }
+    finally { setBusy(false); setActiveJobID(''); setStopPending(false); }
+  };
+
+  const stopGeneration = async () => {
+    if (!activeJobID || stopPending) return;
+    setStopPending(true); setNotice('Stopping generation…');
+    try { await api(`/api/v1/jobs/${activeJobID}/cancel`, { method: 'POST' }); }
+    catch (e) { setStopPending(false); setError(`Could not stop generation: ${e.message}`); }
   };
 
   const openEditor = async () => {
@@ -228,6 +269,87 @@ function App() {
     finally { setBusy(false); }
   };
 
+  const saveModelSettings = async (event) => {
+    event.preventDefault(); setError(''); setNotice('Saving model settings…');
+    try {
+      const settings = await api('/api/v1/settings/model', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'openrouter', model: openRouterModel, api_key: openRouterKey }),
+      });
+      setModelProvider(settings.model_provider); setOpenRouterConfigured(settings.openrouter_configured);
+      setOpenRouterModel(settings.openrouter_model); setOpenRouterKey(''); setNotice('OpenRouter is ready for text generation.');
+    } catch (e) { setError(e.message); setNotice(''); }
+  };
+
+  const saveLocalSettings = async (event) => {
+    event.preventDefault(); setError(''); setNotice('Saving local model settings…');
+    try {
+      const settings = await api('/api/v1/settings/model', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider: 'local', endpoint: localEndpoint, model: localModel, api_key: localKey }),
+      });
+      setModelProvider(settings.model_provider); setLocalConfigured(settings.local_configured);
+      setLocalEndpoint(settings.local_endpoint); setLocalModel(settings.local_model); setLocalKey('');
+      setNotice('Local OpenAI-compatible model is ready for text generation.');
+    } catch (e) { setError(e.message); setNotice(''); }
+  };
+
+  const saveVisionSettings = async (event) => {
+    event.preventDefault(); setError(''); setNotice('Saving vision model settings…');
+    try {
+      const settings = await api('/api/v1/settings/vision', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: visionEndpoint, model: visionModel, api_key: visionKey }),
+      });
+      setVisionEndpoint(settings.vision_endpoint); setVisionModel(settings.vision_model);
+      setVisionConfigured(settings.vision_configured); setVisionKey('');
+      setNotice('Vision model settings saved.');
+    } catch (e) { setError(e.message); setNotice(''); }
+  };
+
+  const activateModel = async (provider) => {
+    setError('');
+    try {
+      const settings = await api('/api/v1/settings/model/activate', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider }),
+      });
+      setModelProvider(settings.model_provider);
+      setNotice(`Using ${provider === 'local' ? 'the local model' : 'OpenRouter'} for text generation.`);
+    } catch (e) { setError(e.message); }
+  };
+
+  const resetModelSettings = async () => {
+    setError('');
+    try {
+      const settings = await api('/api/v1/settings/model', { method: 'DELETE' });
+      setModelProvider(settings.model_provider); setLocalConfigured(settings.local_configured); setOpenRouterConfigured(settings.openrouter_configured);
+      setLocalEndpoint(settings.local_endpoint || ''); setLocalModel(settings.local_model || ''); setOpenRouterModel(settings.openrouter_model || '');
+      setOpenRouterKey(''); setLocalKey(''); setNotice('Switched away from OpenRouter.');
+    } catch (e) { setError(e.message); }
+  };
+
+  const saveTimeoutSettings = async (event) => {
+    event.preventDefault(); setError(''); setNotice('Saving model timeout…');
+    try {
+      const settings = await api('/api/v1/settings/timeout', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ seconds: Number(modelTimeoutSeconds) }),
+      });
+      setModelTimeoutSeconds(String(settings.model_timeout_sec)); setTimeoutSource(settings.timeout_source);
+      setNotice('Model timeout saved. New model requests will use it.');
+    } catch (e) { setError(e.message); setNotice(''); }
+  };
+
+  const resetTimeoutSettings = async () => {
+    setError('');
+    try {
+      const settings = await api('/api/v1/settings/timeout', { method: 'DELETE' });
+      setModelTimeoutSeconds(String(settings.model_timeout_sec)); setTimeoutSource(settings.timeout_source);
+      setNotice('Model timeout now follows OMLX_TIMEOUT_SEC in .env.');
+    } catch (e) { setError(e.message); }
+  };
+
   const previewFiles = useMemo(() => selectedFiles.map((file) => ({ file, url: URL.createObjectURL(file) })), [selectedFiles]);
   const recommendedPhotos = photos.filter((photo) => photo.status === 'recommended');
   const visiblePhotos = photoFilter === 'recommended' ? recommendedPhotos : photos;
@@ -239,20 +361,15 @@ function App() {
     <header className="topbar">
       <button className="brand" onClick={() => { setScreen('home'); setTrip(null); setArticle(null); loadTrips(); }} aria-label="Yatra home"><span className="brand-mark">Y</span><span>Yatra</span></button>
       <span className="topbar-note">Turn trip notes into memorable blog posts</span>
-      <div className="topbar-actions"><button className="text-button" onClick={async () => { setError(''); try { await loadSettings(); setScreen('settings'); } catch (e) { setError(e.message); } }}>Settings</button><button className="text-button" onClick={async () => { await api('/api/v1/auth/logout', { method: 'POST' }); setAuthInfo({ ...(authInfo || {}), authenticated: false }); setScreen('home'); }}>Lock</button></div>
+      <div className="topbar-actions"><button className="text-button" onClick={async () => { setError(''); try { await loadSettings(); setScreen('app-settings'); } catch (e) { setError(e.message); } }}>Settings</button><button className="text-button" onClick={() => { setError(''); setNotice(''); setScreen('model-settings'); }}>Model settings</button><button className="text-button" onClick={async () => { await api('/api/v1/auth/logout', { method: 'POST' }); setAuthInfo({ ...(authInfo || {}), authenticated: false }); setScreen('home'); }}>Lock</button></div>
     </header>
     <main className="main-content">
-      {(error || notice) && <div className={`message ${error ? 'message-error' : ''}`} role={error ? 'alert' : 'status'}>{error || notice}<button onClick={() => { setError(''); if (error) setNotice(''); }} aria-label="Dismiss">×</button></div>}
+      {(error || notice) && <div className={`message ${error ? 'message-error' : ''}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span>{activeJobID && !error && <button className="stop-generation" onClick={stopGeneration} disabled={stopPending} aria-label="Stop generation">{stopPending ? 'Stopping…' : 'Stop'}</button>}</div>}
 
-      {screen === 'settings' && <>
+      {screen === 'app-settings' && <>
         <button className="back-link" onClick={() => setScreen('home')}>← Back to stories</button>
         <section className="welcome"><p className="eyebrow">YATRA</p><h1>Settings</h1><p className="intro">Credentials are encrypted on this server and never shown again after saving. Leave a key blank to keep the saved key.</p></section>
         {settings && <form className="create-card settings-form" onSubmit={saveSettings}>
-          <p className="eyebrow">LANGUAGE MODEL</p>
-          <label className="field">OpenAI-compatible API URL<input required value={settings.llm_base_url} onChange={(e) => setSettings({ ...settings, llm_base_url: e.target.value })} placeholder="https://api.openai.com/v1" /></label>
-          <label className="field">API key <span className="field-help">{settings.llm_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.llm_api_key || ''} onChange={(e) => setSettings({ ...settings, llm_api_key: e.target.value })} /></label>
-          <div className="field-row"><label className="field">Writing model<input value={settings.writer_model} onChange={(e) => setSettings({ ...settings, writer_model: e.target.value })} /></label><label className="field">Vision model<input value={settings.vision_model} onChange={(e) => setSettings({ ...settings, vision_model: e.target.value })} /></label></div>
-          <label className="field">Request timeout (seconds)<input type="number" min="1" max="3600" value={settings.timeout_seconds} onChange={(e) => setSettings({ ...settings, timeout_seconds: Number(e.target.value) })} /></label>
           <p className="eyebrow settings-section">GHOST</p>
           <label className="field">Ghost site URL<input value={settings.ghost_url} onChange={(e) => setSettings({ ...settings, ghost_url: e.target.value })} placeholder="https://yourblog.example" /><span className="field-help">Use the site URL without /ghost/api/admin.</span></label>
           <label className="field">Ghost Admin API key <span className="field-help">{settings.ghost_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.ghost_admin_key || ''} onChange={(e) => setSettings({ ...settings, ghost_admin_key: e.target.value })} /></label>
@@ -286,6 +403,52 @@ function App() {
           </form>
         </section>
         {trips?.length > 0 && <section className="recent-section"><div className="section-title"><div><p className="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2>Your stories</h2></div></div><div className="trip-list">{trips.map((item) => <div key={item.id} className="trip-row"><button className="trip-open-button" onClick={() => openTrip(item.id)}><span><strong>{item.name}</strong><small>{item.location || 'Travel story'} · {new Date(item.updated_at).toLocaleDateString()}</small></span><span className="trip-status">{item.status.toLowerCase().replaceAll('_', ' ')}</span><span className="arrow">→</span></button><button className="trip-delete-button" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={(event) => deleteTrip(event, item)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M8 5.5V3.8h4v1.7m-6.5 0 .8 10.7h7.4l.8-10.7M8.2 8.2v5.5m3.6-5.5v5.5" /></svg></button></div>)}</div></section>}
+      </>}
+
+      {screen === 'model-settings' && <>
+        <button className="back-link" onClick={() => setScreen('home')}>← All stories</button>
+        <section className="welcome settings-welcome"><p className="eyebrow">MODEL SETTINGS</p><h1>Choose your writing model.</h1><p className="intro">Configure a local OpenAI-compatible endpoint or OpenRouter separately. Model requests include your trip notes and photo descriptions.</p></section>
+        <section className="create-card settings-card">
+          <div className="section-title"><div><p className="eyebrow">LOCAL · OPENAI-COMPATIBLE TEXT MODEL</p><h2>{localConfigured ? 'Local model configured' : 'Configure local model'}</h2></div><span className={`model-status ${localConfigured ? 'configured' : ''}`}>{modelProvider === 'local' ? 'Active' : localConfigured ? 'Ready' : 'Not configured'}</span></div>
+          <form onSubmit={saveLocalSettings}>
+            <label className="field">Base URL<input required type="url" value={localEndpoint} onChange={(e) => setLocalEndpoint(e.target.value)} placeholder="http://host.docker.internal:8000/v1" autoComplete="url" /></label>
+            <label className="field">Local model ID<input required value={localModel} onChange={(e) => setLocalModel(e.target.value)} placeholder="your-local-model" autoComplete="off" /></label>
+            <label className="field">Local API key, if required<input type="password" value={localKey} onChange={(e) => setLocalKey(e.target.value)} placeholder="Leave blank to use OMLX_API_KEY from .env, if set" autoComplete="new-password" /></label>
+            <p className="field-help settings-help">The base URL and model ID are saved locally. The key is held in memory only, is never saved to the database, browser, or logs, and must be re-entered after restart if required. It is sent in the authorization header to this endpoint; use a trusted local endpoint, or HTTPS for a remote one.</p>
+            <button className="button button-primary full-button" disabled={!localEndpoint.trim() || !localModel.trim()}>Save and use local model</button>
+          </form>
+          {localConfigured && modelProvider !== 'local' && <button className="text-button reset-model" onClick={() => activateModel('local')}>Use local model</button>}
+        </section>
+        <section className="create-card settings-card provider-card">
+          <div className="section-title"><div><p className="eyebrow">PHOTO ANALYSIS · OPENAI-COMPATIBLE</p><h2>{visionConfigured ? 'Vision model configured' : 'Configure vision model'}</h2></div><span className={`model-status ${visionConfigured ? 'configured' : ''}`}>{visionConfigured ? 'Ready' : 'Not configured'}</span></div>
+          <form onSubmit={saveVisionSettings}>
+            <label className="field">Vision endpoint Base URL<input required type="url" value={visionEndpoint} onChange={(e) => setVisionEndpoint(e.target.value)} placeholder="http://host.docker.internal:8000/v1" autoComplete="url" /></label>
+            <label className="field">Vision model ID<input required value={visionModel} onChange={(e) => setVisionModel(e.target.value)} placeholder="your-vision-model" autoComplete="off" /></label>
+            <label className="field">Vision API key, if required<input type="password" value={visionKey} onChange={(e) => setVisionKey(e.target.value)} placeholder="Leave blank to use OMLX_API_KEY from .env, if set" autoComplete="new-password" /></label>
+            <p className="field-help settings-help">Endpoint and model are saved locally. The key is memory-only, is never saved to the database, browser, or logs, and must be re-entered after restart if required. Selected photos are sent to this endpoint for analysis; use a trusted local endpoint, or HTTPS for a remote one.</p>
+            <button className="button button-primary full-button" disabled={!visionEndpoint.trim() || !visionModel.trim()}>Save vision settings</button>
+          </form>
+        </section>
+        <section className="create-card settings-card provider-card">
+          <div className="section-title"><div><p className="eyebrow">OPENROUTER</p><h2>{openRouterConfigured ? 'OpenRouter configured' : 'Configure OpenRouter'}</h2></div><span className={`model-status ${openRouterConfigured ? 'configured' : ''}`}>{modelProvider === 'openrouter' ? 'Active' : openRouterConfigured ? 'Ready' : 'Not configured'}</span></div>
+          <form onSubmit={saveModelSettings}>
+            <label className="field">OpenRouter model ID<input required value={openRouterModel} onChange={(e) => setOpenRouterModel(e.target.value)} placeholder="openai/gpt-4o-mini" autoComplete="off" /></label>
+            <label className="field">OpenRouter API key<input required type="password" value={openRouterKey} onChange={(e) => setOpenRouterKey(e.target.value)} placeholder="sk-or-v1-…" autoComplete="new-password" /></label>
+            <p className="field-help settings-help">The key is held in server memory only and is cleared when Yatra restarts. It is never sent back to this page, saved in the browser, database, or logs. OpenRouter receives it over HTTPS with each model request.</p>
+            <button className="button button-primary full-button" disabled={!openRouterModel.trim() || !openRouterKey}>Save OpenRouter settings</button>
+          </form>
+          {openRouterConfigured && modelProvider !== 'openrouter' && <button className="text-button reset-model" onClick={() => activateModel('openrouter')}>Use OpenRouter</button>}
+          {modelProvider === 'openrouter' && <button className="text-button reset-model" onClick={resetModelSettings}>Return to local or startup model</button>}
+        </section>
+        <section className="create-card settings-card timeout-card">
+          <div className="section-title"><div><p className="eyebrow">ALL MODEL PROVIDERS</p><h2>Request timeout</h2></div><span className="model-status configured">{timeoutSource === 'settings' ? 'Saved in settings' : timeoutSource === 'env' ? 'From .env' : 'Not set'}</span></div>
+          <form onSubmit={saveTimeoutSettings}>
+            <label className="field">Timeout in seconds<input required type="number" min="0" max="9223372036" step="1" value={modelTimeoutSeconds} onChange={(e) => setModelTimeoutSeconds(e.target.value)} placeholder="Set OMLX_TIMEOUT_SEC in .env" /></label>
+            <p className="field-help settings-help">This applies to every text and vision model request. A saved UI value overrides OMLX_TIMEOUT_SEC and survives restarts. Reset to use the .env value. Set to 0 for no client-side timeout.</p>
+            <button className="button button-primary full-button" disabled={modelTimeoutSeconds === '' || !Number.isSafeInteger(Number(modelTimeoutSeconds)) || Number(modelTimeoutSeconds) < 0 || Number(modelTimeoutSeconds) > 9223372036}>Save timeout</button>
+          </form>
+          {timeoutSource === 'settings' && <button className="text-button reset-model" onClick={resetTimeoutSettings}>Use OMLX_TIMEOUT_SEC from .env</button>}
+        </section>
       </>}
 
       {screen === 'trip' && trip && <>

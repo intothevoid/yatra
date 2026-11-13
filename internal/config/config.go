@@ -3,11 +3,46 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
+	"time"
 )
 
-// Config holds deployment defaults and the active application configuration.
-// The Settings screen may replace model, Ghost, research, image, and upload
-// settings at runtime; persisted credentials are encrypted in DATA_DIR.
+// ModelTimeout keeps the model request timeout adjustable while jobs are
+// running. A value of zero means no client-side timeout is configured.
+type ModelTimeout struct{ seconds atomic.Int64 }
+
+func NewModelTimeout(seconds int64) *ModelTimeout {
+	t := &ModelTimeout{}
+	if seconds > 0 && seconds <= maxTimeoutSeconds {
+		t.seconds.Store(seconds)
+	}
+	return t
+}
+
+const maxTimeoutSeconds = int64((1<<63 - 1) / int64(time.Second))
+
+func (t *ModelTimeout) Seconds() int64 {
+	if t == nil {
+		return 0
+	}
+	return t.seconds.Load()
+}
+
+func (t *ModelTimeout) SetSeconds(seconds int64) error {
+	if t == nil || seconds < 0 || seconds > maxTimeoutSeconds {
+		return &ConfigError{Field: "OMLX_TIMEOUT_SEC", Reason: "must be zero or a positive number of seconds within the supported range"}
+	}
+	t.seconds.Store(seconds)
+	return nil
+}
+
+func (t *ModelTimeout) Duration() time.Duration {
+	return time.Duration(t.Seconds()) * time.Second
+}
+
+// Config holds all application configuration.
+// Startup secrets come from environment variables. UI-configured model keys are
+// held in process memory only and are never persisted.
 type Config struct {
 	// Data directory for SQLite DB and derived assets.
 	DataDir string
@@ -16,12 +51,15 @@ type Config struct {
 	ImportRoots []string
 
 	// OMLX (OpenAI-compatible) API settings.
-	OMLXBaseURL     string
-	OMLXVisionModel string
-	OMLXWriterModel string
-	OMLXTimeoutSec  int
-	OMLXConcurrency int
-	OMLXAPIKey      string
+	OMLXBaseURL       string
+	OMLXWriterBaseURL string
+	OMLXVisionBaseURL string
+	OMLXVisionModel   string
+	OMLXWriterModel   string
+	OMLXTimeoutSec    int
+	ModelTimeout      *ModelTimeout
+	OMLXConcurrency   int
+	OMLXAPIKey        string // from env only
 
 	// Optional destination research. Disabled by default. When enabled, Brave Search
 	// supplies source snippets to the writer model (the browser never sees the key).
@@ -40,7 +78,7 @@ type Config struct {
 
 	// Ghost Admin API (for Milestone 5).
 	GhostURL    string
-	GhostAPIKey string
+	GhostAPIKey string // from env only
 
 	// Upload limits.
 	MaxFileSize    int64 // default 50MB
@@ -48,14 +86,21 @@ type Config struct {
 	MaxUploadFiles int   // default 200
 }
 
-// LoadConfig reads deployment defaults and optional initial settings from the environment.
+func (c *Config) EnsureModelTimeout() {
+	if c != nil && c.ModelTimeout == nil {
+		c.ModelTimeout = NewModelTimeout(int64(c.OMLXTimeoutSec))
+	}
+}
+
+// LoadConfig reads configuration from environment variables.
+// In later milestones, this will also read from a config file.
 func LoadConfig() *Config {
 	cfg := &Config{
 		DataDir:           envOr("DATA_DIR", "./data"),
 		OMLXBaseURL:       envOr("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
 		OMLXVisionModel:   envOr("OMLX_VISION_MODEL", ""),
 		OMLXWriterModel:   envOr("OMLX_WRITER_MODEL", ""),
-		OMLXTimeoutSec:    envIntOr("OMLX_TIMEOUT_SEC", 180),
+		OMLXTimeoutSec:    envIntOr("OMLX_TIMEOUT_SEC", 0),
 		OMLXConcurrency:   envIntOr("OMLX_CONCURRENCY", 1),
 		OMLXAPIKey:        os.Getenv("OMLX_API_KEY"),
 		LocationWebSearch: envBoolOr("LOCATION_WEB_SEARCH", false),
@@ -72,6 +117,9 @@ func LoadConfig() *Config {
 		MaxUploadSize:     int64(envIntOr("MAX_UPLOAD_SIZE_MB", 500)) << 20,
 		MaxUploadFiles:    envIntOr("MAX_UPLOAD_FILES", 200),
 	}
+	cfg.OMLXWriterBaseURL = cfg.OMLXBaseURL
+	cfg.OMLXVisionBaseURL = cfg.OMLXBaseURL
+	cfg.ModelTimeout = NewModelTimeout(int64(cfg.OMLXTimeoutSec))
 
 	// ImportRoots: comma-separated list from env, or default to ./imports
 	if roots := os.Getenv("IMPORT_ROOTS"); roots != "" {

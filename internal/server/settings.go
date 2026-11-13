@@ -39,8 +39,8 @@ func (a *App) registerSettingsRoutes(r interface {
 	Get(string, http.HandlerFunc)
 	Put(string, http.HandlerFunc)
 }) {
-	r.Get("/api/v1/settings", a.getSettings)
-	r.Put("/api/v1/settings", a.putSettings)
+	r.Get("/api/v1/app-settings", a.getSettings)
+	r.Put("/api/v1/app-settings", a.putSettings)
 }
 
 func (a *App) settingsPath() string { return filepath.Join(a.cfg.DataDir, "app-settings.enc") }
