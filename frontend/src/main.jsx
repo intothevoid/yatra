@@ -9,7 +9,7 @@ const api = async (path, options = {}) => {
   const response = await fetch(path, options);
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
-    try { message = (await response.json()).message || message; } catch { /* keep fallback */ }
+    try { const body = await response.text(); try { const parsed = JSON.parse(body); message = parsed.message || parsed.error || message; } catch { message = body.trim() || message; } } catch { /* keep fallback */ }
     throw new Error(message);
   }
   if (response.status === 204) return null;
@@ -18,6 +18,12 @@ const api = async (path, options = {}) => {
 
 
 function App() {
+  const [authInfo, setAuthInfo] = useState(null);
+  const [authPassword, setAuthPassword] = useState('');
+  const [authError, setAuthError] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [settings, setSettings] = useState(null);
+  const [settingsBusy, setSettingsBusy] = useState(false);
   const [trips, setTrips] = useState([]);
   const [trip, setTrip] = useState(null);
   const [photos, setPhotos] = useState([]);
@@ -105,21 +111,41 @@ function App() {
     stream.onerror = () => { stream.close(); reject(new Error('Lost the progress connection. The job may still be running; refresh this trip to check.')); };
   });
 
-  useEffect(() => { loadTrips().catch((e) => setError(e.message)); }, [loadTrips]);
-  useEffect(() => { api('/api/v1/settings').then((settings) => {
-    if (settings.max_upload_files > 0) setMaxUploadFiles(settings.max_upload_files);
-    setModelProvider(settings.model_provider || 'fake');
-    setLocalConfigured(Boolean(settings.local_configured));
-    setOpenRouterConfigured(Boolean(settings.openrouter_configured));
-    setLocalEndpoint(settings.local_endpoint || '');
-    setLocalModel(settings.local_model || '');
-    setVisionEndpoint(settings.vision_endpoint || '');
-    setVisionModel(settings.vision_model || '');
-    setVisionConfigured(Boolean(settings.vision_configured));
-    setOpenRouterModel(settings.openrouter_model || (settings.model_provider === 'openrouter' ? settings.model : ''));
-    setModelTimeoutSeconds(String(settings.model_timeout_sec ?? ''));
-    setTimeoutSource(settings.timeout_source || 'unset');
-  }).catch(() => {}); }, []);
+  const refreshAuth = useCallback(async () => setAuthInfo(await api('/api/v1/auth/status')), []);
+  const loadSettings = async () => {
+    const value = await api('/api/v1/app-settings');
+    setSettings(value);
+    return value;
+  };
+  const saveSettings = async (event) => {
+    event.preventDefault(); setSettingsBusy(true); setError(''); setNotice('Saving settings…');
+    try {
+      const saved = await api('/api/v1/app-settings', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings) });
+      setSettings(saved); if (saved?.max_upload_files > 0) setMaxUploadFiles(saved.max_upload_files); setNotice('Settings saved and active'); setTimeout(() => setNotice(''), 2400);
+    } catch (e) { setError(e.message); setNotice(''); }
+    finally { setSettingsBusy(false); }
+  };
+  const submitAuth = async (event) => {
+    event.preventDefault(); setAuthBusy(true); setAuthError('');
+    try { await api(`/api/v1/auth/${authInfo?.configured ? 'login' : 'setup'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: authPassword }) }); setAuthPassword(''); await refreshAuth(); await loadTrips(); }
+    catch (e) { setAuthError(e.message); }
+    finally { setAuthBusy(false); }
+  };
+  useEffect(() => { refreshAuth().catch(() => setAuthError('Could not connect to Yatra.')); }, [refreshAuth]);
+  useEffect(() => {
+    if (!authInfo?.authenticated) return;
+    loadTrips().catch((e) => setError(e.message));
+    loadSettings().then((value) => { if (value?.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files); }).catch((e) => setError(e.message));
+    api('/api/v1/settings').then((value) => {
+      if (value.max_upload_files > 0) setMaxUploadFiles(value.max_upload_files);
+      setModelProvider(value.model_provider || 'fake'); setLocalConfigured(Boolean(value.local_configured));
+      setOpenRouterConfigured(Boolean(value.openrouter_configured)); setLocalEndpoint(value.local_endpoint || '');
+      setLocalModel(value.local_model || ''); setVisionEndpoint(value.vision_endpoint || '');
+      setVisionModel(value.vision_model || ''); setVisionConfigured(Boolean(value.vision_configured));
+      setOpenRouterModel(value.openrouter_model || (value.model_provider === 'openrouter' ? value.model : ''));
+      setModelTimeoutSeconds(String(value.model_timeout_sec ?? '')); setTimeoutSource(value.timeout_source || 'unset');
+    }).catch((e) => setError(e.message));
+  }, [authInfo?.authenticated, loadTrips]);
   useEffect(() => () => clearTimeout(saveTimer.current), []);
 
   const addSelectedFiles = (event) => {
@@ -329,13 +355,35 @@ function App() {
   const visiblePhotos = photoFilter === 'recommended' ? recommendedPhotos : photos;
   useEffect(() => () => previewFiles.forEach((item) => URL.revokeObjectURL(item.url)), [previewFiles]);
 
+  if (!authInfo) return <div className="app-shell"><main className="main-content"><p>Connecting to Yatra…</p></main></div>;
+  if (!authInfo.authenticated) return <div className="app-shell"><main className="main-content"><section className="welcome"><p className="eyebrow">YATRA</p><h1>{authInfo.configured ? 'Welcome back' : 'Set up Yatra'}</h1><p className="intro">{authInfo.configured ? 'Enter your app password to continue.' : 'Create an app password to protect your photos, drafts, and settings.'}</p></section><section className="create-card"><form onSubmit={submitAuth}><label className="field">App password<input autoFocus type="password" autoComplete={authInfo.configured ? 'current-password' : 'new-password'} minLength={12} required value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} /></label>{authError && <p className="message message-error" role="alert">{authError}</p>}<button className="button button-primary full-button" disabled={authBusy}>{authBusy ? 'Unlocking…' : authInfo.configured ? 'Unlock Yatra' : 'Create password'}</button></form></section></main></div>;
   return <div className="app-shell">
     <header className="topbar">
-      <button className="brand" onClick={() => { setScreen('home'); setTrip(null); setArticle(null); loadTrips(); }} aria-label="Yatra home"><span className="brand-mark">Y</span><span>yatra</span></button>
-      <div className="topbar-tools"><span className="topbar-note">A little help turning trips into stories</span><button className="settings-button" onClick={() => { setError(''); setNotice(''); setScreen('settings'); }}>Model settings</button></div>
+      <button className="brand" onClick={() => { setScreen('home'); setTrip(null); setArticle(null); loadTrips(); }} aria-label="Yatra home"><span className="brand-mark">Y</span><span>Yatra</span></button>
+      <span className="topbar-note">Turn trip notes into memorable blog posts</span>
+      <div className="topbar-actions"><button className="text-button" onClick={async () => { setError(''); try { await loadSettings(); setScreen('app-settings'); } catch (e) { setError(e.message); } }}>Settings</button><button className="text-button" onClick={() => { setError(''); setNotice(''); setScreen('model-settings'); }}>Model settings</button><button className="text-button" onClick={async () => { await api('/api/v1/auth/logout', { method: 'POST' }); setAuthInfo({ ...(authInfo || {}), authenticated: false }); setScreen('home'); }}>Lock</button></div>
     </header>
     <main className="main-content">
       {(error || notice) && <div className={`message ${error ? 'message-error' : ''}`} role={error ? 'alert' : 'status'}><span>{error || notice}</span>{activeJobID && !error && <button className="stop-generation" onClick={stopGeneration} disabled={stopPending} aria-label="Stop generation">{stopPending ? 'Stopping…' : 'Stop'}</button>}</div>}
+
+      {screen === 'app-settings' && <>
+        <button className="back-link" onClick={() => setScreen('home')}>← Back to stories</button>
+        <section className="welcome"><p className="eyebrow">YATRA</p><h1>Settings</h1><p className="intro">Credentials are encrypted on this server and never shown again after saving. Leave a key blank to keep the saved key.</p></section>
+        {settings && <form className="create-card settings-form" onSubmit={saveSettings}>
+          <p className="eyebrow settings-section">GHOST</p>
+          <label className="field">Ghost site URL<input value={settings.ghost_url} onChange={(e) => setSettings({ ...settings, ghost_url: e.target.value })} placeholder="https://yourblog.example" /><span className="field-help">Use the site URL without /ghost/api/admin.</span></label>
+          <label className="field">Ghost Admin API key <span className="field-help">{settings.ghost_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.ghost_admin_key || ''} onChange={(e) => setSettings({ ...settings, ghost_admin_key: e.target.value })} /></label>
+          <p className="eyebrow settings-section">PLACE RESEARCH</p>
+          <label className="check-field"><input type="checkbox" checked={settings.web_research} onChange={(e) => setSettings({ ...settings, web_research: e.target.checked })} /> Search the web for destination facts</label>
+          <p className="field-help">Off by default. When off, your configured model provides place background. When on, Yatra uses Brave Search.</p>
+          <label className="field">Brave Search API key <span className="field-help">{settings.brave_key_configured ? 'A key is saved. Leave blank to keep it.' : 'No key saved.'}</span><input type="password" autoComplete="new-password" value={settings.brave_key || ''} onChange={(e) => setSettings({ ...settings, brave_key: e.target.value })} /></label>
+          <p className="eyebrow settings-section">PHOTOS AND UPLOADS</p>
+          <div className="field-row settings-grid"><label className="field">Thumbnail size (px)<input type="number" min="100" value={settings.thumbnail_size} onChange={(e) => setSettings({ ...settings, thumbnail_size: Number(e.target.value) })} /></label><label className="field">Preview size (px)<input type="number" min="100" value={settings.preview_size} onChange={(e) => setSettings({ ...settings, preview_size: Number(e.target.value) })} /></label><label className="field">Ghost image size (px)<input type="number" min="100" value={settings.export_size} onChange={(e) => setSettings({ ...settings, export_size: Number(e.target.value) })} /></label><label className="field">JPEG quality (30–100)<input type="number" min="30" max="100" value={settings.jpeg_quality} onChange={(e) => setSettings({ ...settings, jpeg_quality: Number(e.target.value) })} /></label></div>
+          <p className="field-help">Image settings apply to new uploads; existing photo derivatives are not regenerated.</p>
+          <div className="field-row settings-grid"><label className="field">Maximum size per photo (MB)<input type="number" min="1" value={settings.max_file_size_mb} onChange={(e) => setSettings({ ...settings, max_file_size_mb: Number(e.target.value) })} /></label><label className="field">Maximum upload total (MB)<input type="number" min="1" value={settings.max_upload_size_mb} onChange={(e) => setSettings({ ...settings, max_upload_size_mb: Number(e.target.value) })} /></label><label className="field">Photos per upload<input type="number" min="1" max="1000" value={settings.max_upload_files} onChange={(e) => setSettings({ ...settings, max_upload_files: Number(e.target.value) })} /></label></div>
+          <button className="button button-primary full-button" disabled={settingsBusy}>{settingsBusy ? 'Saving…' : 'Save settings'}</button>
+        </form>}
+      </>}
 
       {screen === 'home' && <>
         <section className="welcome">
@@ -357,7 +405,7 @@ function App() {
         {trips?.length > 0 && <section className="recent-section"><div className="section-title"><div><p className="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2>Your stories</h2></div></div><div className="trip-list">{trips.map((item) => <div key={item.id} className="trip-row"><button className="trip-open-button" onClick={() => openTrip(item.id)}><span><strong>{item.name}</strong><small>{item.location || 'Travel story'} · {new Date(item.updated_at).toLocaleDateString()}</small></span><span className="trip-status">{item.status.toLowerCase().replaceAll('_', ' ')}</span><span className="arrow">→</span></button><button className="trip-delete-button" title={`Delete ${item.name}`} aria-label={`Delete ${item.name}`} onClick={(event) => deleteTrip(event, item)}><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.5 5.5h13M8 5.5V3.8h4v1.7m-6.5 0 .8 10.7h7.4l.8-10.7M8.2 8.2v5.5m3.6-5.5v5.5" /></svg></button></div>)}</div></section>}
       </>}
 
-      {screen === 'settings' && <>
+      {screen === 'model-settings' && <>
         <button className="back-link" onClick={() => setScreen('home')}>← All stories</button>
         <section className="welcome settings-welcome"><p className="eyebrow">MODEL SETTINGS</p><h1>Choose your writing model.</h1><p className="intro">Configure a local OpenAI-compatible endpoint or OpenRouter separately. Model requests include your trip notes and photo descriptions.</p></section>
         <section className="create-card settings-card">

@@ -267,6 +267,16 @@ func (g *Genie) TextProviderStatus() TextProviderSettings {
 	}
 }
 
+// Configure applies runtime settings that affect article drafting. Model
+// adapters are managed independently so updating Ghost, search, or image
+// settings does not replace a selected local or OpenRouter provider.
+func (g *Genie) Configure(cfg *config.Config) {
+	g.modelMu.Lock()
+	g.cfg = cfg
+	g.modelMu.Unlock()
+	g.drafter.SetConfig(cfg)
+}
+
 // AnalyseTrip runs VLM analysis on all photos in a trip.
 func (g *Genie) AnalyseTrip(ctx context.Context, tripID string) error {
 	return g.AnalyseTripJob(ctx, tripID, "job_"+tripID+"_analyse")

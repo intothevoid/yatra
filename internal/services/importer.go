@@ -28,6 +28,13 @@ func New(cfg *config.Config, s *store.Store, proc adapters.ImageProcessor) *Impo
 	return &Importer{cfg: cfg, store: s, proc: proc}
 }
 
+// ConfigureImageSettings applies derivative settings to future imports.
+func (i *Importer) ConfigureImageSettings(cfg *config.Config) {
+	if system, ok := i.proc.(*adapters.SystemImageProcessor); ok && system.Vips != nil {
+		system.Vips.Configure(cfg.ThumbnailSize, cfg.PreviewSize, cfg.ExportSize, cfg.JPEGQuality)
+	}
+}
+
 // ImportTrip reads files from sourcePath, computes hashes, extracts EXIF,
 // and creates a Trip + SourceFiles + Photos in the database.
 func (i *Importer) ImportTrip(ctx context.Context, tripID, sourcePath string) error {

@@ -11,6 +11,11 @@ button { cursor: pointer; }
 .topbar-tools { display: flex; align-items: center; gap: 18px; }
 .settings-button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--green); font-size: 12px; font-weight: 600; }
 .settings-button:hover { background: #f0f4ee; }
+.topbar-actions { display: flex; align-items: center; gap: 16px; }
+.settings-section { margin-top: 27px; padding-top: 23px; border-top: 1px solid var(--line); }
+.settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.check-field { display: flex; align-items: center; gap: 10px; margin: 8px 0; color: #45534a; font-size: 14px; }
+.check-field input { width: 18px; height: 18px; accent-color: var(--green); }
 .main-content { max-width: 860px; margin: 0 auto; padding: 56px 24px 90px; }
 .welcome { max-width: 640px; margin: 0 auto 36px; text-align: center; }
 .eyebrow { margin: 0 0 10px; color: var(--orange); font-size: 11px; font-weight: 700; letter-spacing: 1.7px; }
@@ -119,6 +124,9 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
   .topbar-note { max-width: 155px; text-align: right; font-size: 11px; }
   .topbar-tools { gap: 8px; }
   .settings-button { padding: 7px 8px; font-size: 11px; }
+  .topbar-actions { gap: 10px; }
+  .topbar-actions .text-button { font-size: 11px; }
+  .topbar-note { display: none; }
   .main-content { padding: 36px 16px 72px; }
   .welcome { margin-bottom: 27px; }
   .welcome h1 { font-size: 42px; }
@@ -127,6 +135,7 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
   .create-card { padding: 23px 18px; border-radius: 13px; }
   .settings-card { padding: 23px 18px; }
   .field-row { grid-template-columns: 1fr; gap: 0; }
+  .settings-grid { grid-template-columns: 1fr; }
   .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .review-tools { align-items: flex-end; flex-direction: column; gap: 8px; }
   .photo-card { border-radius: 7px; }
