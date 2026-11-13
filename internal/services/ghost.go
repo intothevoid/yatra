@@ -136,8 +136,11 @@ type GhostTag struct {
 func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleDocument) (GhostPost, error) {
 	photoURLs := make(map[string]string)
 	photoDescriptions := make(map[string]string)
+	photoCaptions := make(map[string]string)
+	videoPosters := make(map[string]string)
 	dimensions := make(map[string]image.Point)
 	photoIDs := []string{doc.FeaturePhotoID}
+	videoIDs := []string{}
 	if doc.Lexical != "" {
 		for _, match := range regexp.MustCompile(`/api/v1/photos/(p_[^/]+)/thumbnail`).FindAllStringSubmatch(doc.Lexical, -1) {
 			photoIDs = append(photoIDs, match[1])
@@ -145,6 +148,43 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 	}
 	for _, block := range doc.Blocks {
 		photoIDs = append(photoIDs, block.PhotoIDs...)
+		if block.Type == domain.BlockVideo && block.VideoID != "" {
+			videoIDs = append(videoIDs, block.VideoID)
+		}
+	}
+	videoURLs := make(map[string]string)
+	if doc.Lexical != "" {
+		for _, match := range regexp.MustCompile(`/api/v1/videos/(v_[^/]+)/content`).FindAllStringSubmatch(doc.Lexical, -1) {
+			videoIDs = append(videoIDs, match[1])
+		}
+	}
+	for _, id := range videoIDs {
+		if id == "" || videoURLs[id] != "" {
+			continue
+		}
+		video, err := e.store.Videos.Get(ctx, id)
+		if err != nil {
+			return GhostPost{}, fmt.Errorf("load video %s: %w", id, err)
+		}
+		remote, err := e.client.UploadMedia(ctx, video.Path)
+		if err != nil {
+			return GhostPost{}, fmt.Errorf("upload video %s: %w", id, err)
+		}
+		if err = e.client.VerifyMediaURL(ctx, remote); err != nil {
+			return GhostPost{}, fmt.Errorf("verify hosted video %s: %w", id, err)
+		}
+		videoURLs[id] = remote
+		if video.PosterPath == "" {
+			return GhostPost{}, fmt.Errorf("video %s is missing its poster image", id)
+		}
+		posterURL, err := e.client.UploadImage(ctx, video.PosterPath)
+		if err != nil {
+			return GhostPost{}, fmt.Errorf("upload poster for video %s: %w", id, err)
+		}
+		if err = e.client.VerifyMediaURL(ctx, posterURL); err != nil {
+			return GhostPost{}, fmt.Errorf("verify hosted poster for video %s: %w", id, err)
+		}
+		videoPosters[id] = posterURL
 	}
 	for _, photoID := range photoIDs {
 		if photoID == "" || photoURLs[photoID] != "" {
@@ -162,6 +202,7 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 			return GhostPost{}, fmt.Errorf("photo %s has no export image", photoID)
 		}
 		photoDescriptions[photoID] = photoDescription(*photo)
+		photoCaptions[photoID] = photoCaption(*photo)
 		remoteURL, err := e.client.UploadImage(ctx, path)
 		if err != nil {
 			return GhostPost{}, fmt.Errorf("upload photo %s: %w", photoID, err)
@@ -175,7 +216,7 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 		}
 	}
 
-	contentHTML, lexical, err := renderGhostContent(doc, photoURLs, photoDescriptions, dimensions)
+	contentHTML, lexical, err := renderGhostContentWithMetadata(doc, photoURLs, photoDescriptions, photoCaptions, dimensions, videoURLs, videoPosters)
 	if err != nil {
 		return GhostPost{}, err
 	}
@@ -195,23 +236,36 @@ func (e *GhostExporter) convertToGhost(ctx context.Context, doc *domain.ArticleD
 		Tags:                tags,
 		FeatureImage:        photoURLs[doc.FeaturePhotoID],
 		FeatureImageAlt:     limitUTF16(photoDescriptions[doc.FeaturePhotoID], 125),
-		FeatureImageCaption: photoDescriptions[doc.FeaturePhotoID],
+		FeatureImageCaption: photoCaptions[doc.FeaturePhotoID],
 		Status:              "draft",
 	}, nil
 }
 
 func renderGhostContent(doc *domain.ArticleDocument, photoURLs, photoDescriptions map[string]string, dimensions map[string]image.Point) (string, string, error) {
+	return renderGhostContentWithVideos(doc, photoURLs, photoDescriptions, dimensions, nil)
+}
+
+func renderGhostContentWithVideos(doc *domain.ArticleDocument, photoURLs, photoDescriptions map[string]string, dimensions map[string]image.Point, videoURLs map[string]string) (string, string, error) {
+	return renderGhostContentWithMetadata(doc, photoURLs, photoDescriptions, photoDescriptions, dimensions, videoURLs, nil)
+}
+
+func renderGhostContentWithMetadata(doc *domain.ArticleDocument, photoURLs, photoDescriptions, photoCaptions map[string]string, dimensions map[string]image.Point, videoURLs, videoPosters map[string]string) (string, string, error) {
 	var blocks []domain.ArticleBlock
 	for _, sourceBlock := range doc.Blocks {
 
 		block := sourceBlock
+		originalVideoID := block.VideoID
 		block.PhotoIDs = append([]string(nil), sourceBlock.PhotoIDs...)
+		if block.Type == domain.BlockVideo {
+			block.VideoID = videoURLs[block.VideoID]
+			block.VideoPosterURL = videoPosters[originalVideoID]
+		}
 		block.PhotoCaptions = append([]string(nil), sourceBlock.PhotoCaptions...)
 		block.Caption = plainCaption(block.Caption)
 		for j, photoID := range block.PhotoIDs {
 			if block.Type == domain.BlockGallery {
 				if j >= len(block.PhotoCaptions) {
-					block.PhotoCaptions = append(block.PhotoCaptions, photoDescriptions[photoID])
+					block.PhotoCaptions = append(block.PhotoCaptions, photoCaptions[photoID])
 				}
 			}
 			if block.Type == domain.BlockImage {
@@ -219,7 +273,7 @@ func renderGhostContent(doc *domain.ArticleDocument, photoURLs, photoDescription
 					block.AltText = photoDescriptions[photoID]
 				}
 				if block.Caption == "" {
-					block.Caption = photoDescriptions[photoID]
+					block.Caption = photoCaptions[photoID]
 				}
 			}
 			block.PhotoIDs[j] = photoURLs[photoID]
@@ -233,8 +287,9 @@ func renderGhostContent(doc *domain.ArticleDocument, photoURLs, photoDescription
 		if err := json.Unmarshal([]byte(doc.Lexical), &state); err != nil {
 			return "", "", fmt.Errorf("parse editor document: %w", err)
 		}
-		state = enrichLexicalCaptions(state, photoDescriptions)
+		state = enrichLexicalCaptions(state, photoDescriptions, photoCaptions)
 		state = replacePhotoURLs(state, photoURLs)
+		state = replaceVideoURLs(state, videoURLs, videoPosters)
 		data, err := json.Marshal(state)
 		if err != nil {
 			return "", "", fmt.Errorf("encode Ghost editor document: %w", err)
@@ -285,9 +340,45 @@ func replacePhotoURLs(value any, photoURLs map[string]string) any {
 	}
 }
 
+func replaceVideoURLs(value any, videoURLs, videoPosters map[string]string) any {
+	switch item := value.(type) {
+	case map[string]any:
+		for key, child := range item {
+			item[key] = replaceVideoURLs(child, videoURLs, videoPosters)
+		}
+		if item["type"] == "video" {
+			if name, ok := item["fileName"].(string); ok {
+				if url := videoURLs[name]; url != "" {
+					item["src"] = url
+				}
+				if poster := videoPosters[name]; poster != "" {
+					item["customThumbnailSrc"] = poster
+					item["thumbnailSrc"] = poster
+				}
+			}
+		}
+		return item
+	case []any:
+		for i, child := range item {
+			item[i] = replaceVideoURLs(child, videoURLs, videoPosters)
+		}
+		return item
+	case string:
+		for id, url := range videoURLs {
+			item = strings.ReplaceAll(item, "/api/v1/videos/"+id+"/content", url)
+		}
+		for id, url := range videoPosters {
+			item = strings.ReplaceAll(item, "/api/v1/videos/"+id+"/poster", url)
+		}
+		return item
+	default:
+		return value
+	}
+}
+
 var lexicalPhotoURLPattern = regexp.MustCompile(`/api/v1/photos/(p_[^/]+)/thumbnail`)
 
-func enrichLexicalCaptions(value any, descriptions map[string]string) any {
+func enrichLexicalCaptions(value any, descriptions, captions map[string]string) any {
 	switch item := value.(type) {
 	case map[string]any:
 		// Use core Lexical types supported by older Ghost installations too.
@@ -306,7 +397,7 @@ func enrichLexicalCaptions(value any, descriptions map[string]string) any {
 			}
 		}
 		for key, child := range item {
-			item[key] = enrichLexicalCaptions(child, descriptions)
+			item[key] = enrichLexicalCaptions(child, descriptions, captions)
 		}
 		if source, ok := item["src"].(string); ok {
 			photoID := ""
@@ -323,7 +414,11 @@ func enrichLexicalCaptions(value any, descriptions map[string]string) any {
 				caption = plainCaption(caption)
 				item["caption"] = caption
 				if strings.TrimSpace(caption) == "" {
-					item["caption"] = description
+					if captions[photoID] != "" {
+						item["caption"] = captions[photoID]
+					} else {
+						item["caption"] = description
+					}
 				}
 				if item["type"] == "image" {
 					alt, _ := item["alt"].(string)
@@ -336,7 +431,7 @@ func enrichLexicalCaptions(value any, descriptions map[string]string) any {
 		return item
 	case []any:
 		for i, child := range item {
-			item[i] = enrichLexicalCaptions(child, descriptions)
+			item[i] = enrichLexicalCaptions(child, descriptions, captions)
 		}
 		return item
 	default:
@@ -434,6 +529,10 @@ func blocksToGhostHTML(blocks []domain.ArticleBlock, dimensions map[string]image
 				buf.WriteString("<figcaption>" + escapeHTML(block.Caption) + "</figcaption>")
 			}
 			buf.WriteString("</figure>\n")
+		case domain.BlockVideo:
+			if block.VideoID != "" {
+				buf.WriteString(fmt.Sprintf("<figure class=\"kg-card kg-video-card kg-width-wide travel-video\"><video class=\"travel-video__player\" loop autoplay muted playsinline preload=\"none\" poster=\"%s\" style=\"width:100%%;height:auto;display:block;\"><source src=\"%s\" type=\"video/mp4\"></video></figure>\n", html.EscapeString(block.VideoPosterURL), html.EscapeString(block.VideoID)))
+			}
 		case domain.BlockQuote:
 			buf.WriteString(fmt.Sprintf("<blockquote>%s</blockquote>\n", escapeHTML(block.Text)))
 		}
@@ -683,6 +782,90 @@ func (g *GhostClient) UploadImage(ctx context.Context, imagePath string) (string
 		return result.Images[0].URL, nil
 	}
 	return "", fmt.Errorf("no image URL in response")
+}
+
+// UploadMedia uploads an MP4 through Ghost's Admin media endpoint.
+func (g *GhostClient) UploadMedia(ctx context.Context, mediaPath string) (string, error) {
+	token, err := g.generateJWT()
+	if err != nil {
+		return "", fmt.Errorf("generate JWT: %w", err)
+	}
+	file, err := os.Open(mediaPath)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	partHeader := make(textproto.MIMEHeader)
+	partHeader.Set("Content-Disposition", mime.FormatMediaType("form-data", map[string]string{"name": "file", "filename": filepath.Base(mediaPath)}))
+	partHeader.Set("Content-Type", "video/mp4")
+	part, err := writer.CreatePart(partHeader)
+	if err != nil {
+		return "", err
+	}
+	if _, err = io.Copy(part, file); err != nil {
+		return "", err
+	}
+	if err = writer.WriteField("purpose", "media"); err != nil {
+		return "", err
+	}
+	if err = writer.Close(); err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, "POST", g.BaseURL+"/ghost/api/admin/media/upload/", body)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Ghost "+token)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("Accept-Version", "v5.0")
+	resp, err := g.HTTP.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		data, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Ghost media upload failed %d: %s", resp.StatusCode, string(data))
+	}
+	var result struct {
+		Media []struct {
+			URL string `json:"url"`
+		} `json:"media"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+	if len(result.Media) == 0 {
+		return "", fmt.Errorf("no media URL in response")
+	}
+	return result.Media[0].URL, nil
+}
+
+// VerifyMediaURL confirms the URL returned by Ghost storage can be fetched without credentials.
+func (g *GhostClient) VerifyMediaURL(ctx context.Context, mediaURL string) error {
+	parsed, err := url.Parse(mediaURL)
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return fmt.Errorf("Ghost returned an invalid public media URL")
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, mediaURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := g.HTTP.Do(req)
+	if err != nil {
+		return fmt.Errorf("media URL is not publicly reachable: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("media URL returned HTTP %d", resp.StatusCode)
+	}
+	_, _ = io.CopyN(io.Discard, resp.Body, 1)
+	return nil
 }
 
 // GetPosts fetches published posts from Ghost.

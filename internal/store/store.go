@@ -15,6 +15,7 @@ type Store struct {
 	db       *sql.DB
 	Trips    *TripStore
 	Photos   *PhotoStore
+	Videos   *VideoStore
 	Articles *ArticleStore
 	Jobs     *JobStore
 	Settings *SettingsStore
@@ -46,7 +47,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 
 	// Run migrations
 	migrator := NewMigrator(db)
-	if err := migrator.MigrateTo(ctx, 5); err != nil {
+	if err := migrator.MigrateTo(ctx, 7); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -55,6 +56,7 @@ func Open(ctx context.Context, dataDir string) (*Store, error) {
 		db:       db,
 		Trips:    &TripStore{db: db},
 		Photos:   &PhotoStore{db: db},
+		Videos:   &VideoStore{db: db},
 		Articles: &ArticleStore{db: db},
 		Jobs:     &JobStore{db: db},
 		Settings: &SettingsStore{db: db},

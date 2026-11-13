@@ -19,10 +19,10 @@ go test ./internal/store/... -v
 |---------|-------|----------|
 | `internal/domain` | 16 | Status transitions, slug generation, validation |
 | `internal/config` | 6 | Env loading, path allowlist, validation |
-| `internal/store` | 11 | CRUD operations, migrations, job leases |
+| `internal/store` | 12 | CRUD operations, migrations, job leases, video metadata |
 | `internal/adapters` | 11 | Fake AI, fake server, image processor |
 | `internal/server` | 13 | HTTP handlers, upload security, SSE |
-| `internal/services` | 10 | Clustering, ranking, evidence extraction |
+| `internal/services` | video tests plus service tests | Clustering, ranking, evidence extraction, FFmpeg metadata/transcoding and Ghost video markup |
 
 ## Test Strategy
 
@@ -36,6 +36,7 @@ go test ./internal/store/... -v
 - Full import → analyse → generate pipeline
 - HTTP handler tests with httptest server
 - Job progress streaming via SSE
+- Video tests generate small FFV1 fixtures at runtime; FFmpeg checks cover odd landscape, portrait, and square sizing, audio removal, trim bounds, codec metadata, and corrupt input. WebP poster assertions additionally require `vips`; those poster tests skip with a clear reason when it is absent.
 
 ### Security Tests
 - Path traversal prevention in imports and zip extraction

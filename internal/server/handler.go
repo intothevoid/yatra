@@ -76,6 +76,11 @@ func (a *App) Router() http.Handler {
 	r.Post("/api/v1/trips/{id}/analyse", a.analyseTrip)
 
 	r.Get("/api/v1/trips/{id}/photos", a.listPhotos)
+	r.Get("/api/v1/trips/{id}/videos", a.listVideos)
+	r.Patch("/api/v1/trips/{id}/videos/{videoId}", a.updateVideoSelection)
+	r.Post("/api/v1/trips/{id}/videos/{videoId}/process", a.reprocessVideo)
+	r.Get("/api/v1/videos/{videoId}/content", a.videoContent)
+	r.Get("/api/v1/videos/{videoId}/poster", a.videoPoster)
 	r.Post("/api/v1/trips/{id}/photos/select-all", a.selectAllPhotos)
 	r.Get("/api/v1/photos/{photoId}/thumbnail", a.photoThumbnail)
 	r.Patch("/api/v1/trips/{id}/photos/{photoId}", a.updatePhotoSelection)
@@ -104,6 +109,79 @@ func (a *App) Router() http.Handler {
 	return r
 }
 
+func (a *App) listVideos(w http.ResponseWriter, r *http.Request) {
+	items, err := a.store.Videos.GetByTrip(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		writeAPIError(w, 500, "internal_error", err.Error())
+		return
+	}
+	for i := range items {
+		items[i].URL = "/api/v1/videos/" + items[i].ID + "/content"
+		items[i].PosterURL = "/api/v1/videos/" + items[i].ID + "/poster"
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(items)
+}
+
+func (a *App) updateVideoSelection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Selected bool `json:"selected"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		writeAPIError(w, 400, "bad_request", "invalid JSON")
+		return
+	}
+	err := a.store.Videos.UpdateSelection(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "videoId"), req.Selected)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) reprocessVideo(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Start   float64 `json:"start_time"`
+		End     float64 `json:"end_time"`
+		Profile string  `json:"profile"`
+	}
+	if json.NewDecoder(r.Body).Decode(&req) != nil {
+		writeAPIError(w, 400, "bad_request", "invalid video processing settings")
+		return
+	}
+	if req.Profile == "" {
+		req.Profile = a.cfg.VideoDefaultProfile
+	}
+	err := a.importer.ReprocessVideo(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "videoId"), services.VideoTrim{Start: req.Start, End: req.End}, req.Profile)
+	if err != nil {
+		writeAPIError(w, 400, "video_processing_failed", err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *App) videoContent(w http.ResponseWriter, r *http.Request) {
+	v, err := a.store.Videos.Get(r.Context(), chi.URLParam(r, "videoId"))
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "video/mp4")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeFile(w, r, v.Path)
+}
+
+func (a *App) videoPoster(w http.ResponseWriter, r *http.Request) {
+	v, err := a.store.Videos.Get(r.Context(), chi.URLParam(r, "videoId"))
+	if err != nil || v.PosterPath == "" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "image/webp")
+	w.Header().Set("Cache-Control", "private, max-age=3600")
+	http.ServeFile(w, r, v.PosterPath)
+}
+
 func (a *App) publicSettings(w http.ResponseWriter, r *http.Request) {
 	maxUploadFiles := a.cfg.MaxUploadFiles
 	if maxUploadFiles <= 0 {
@@ -124,21 +202,25 @@ func (a *App) publicSettings(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	modelSettings := a.genie.TextProviderStatus()
 	json.NewEncoder(w).Encode(map[string]any{
-		"max_upload_files":      maxUploadFiles,
-		"model_provider":        modelSettings.Provider,
-		"model":                 modelSettings.Model,
-		"model_endpoint":        modelSettings.Endpoint,
-		"model_configured":      modelSettings.Provider == "openrouter" || modelSettings.Provider == "local",
-		"local_model":           modelSettings.LocalModel,
-		"local_endpoint":        modelSettings.LocalEndpoint,
-		"local_configured":      modelSettings.LocalConfigured,
-		"openrouter_model":      modelSettings.OpenRouterModel,
-		"openrouter_configured": modelSettings.OpenRouterConfigured,
-		"vision_model":          modelSettings.VisionModel,
-		"vision_endpoint":       modelSettings.VisionEndpoint,
-		"vision_configured":     modelSettings.VisionConfigured,
-		"model_timeout_sec":     a.cfg.ModelTimeout.Seconds(),
-		"timeout_source":        timeoutSource,
+		"max_upload_files":               maxUploadFiles,
+		"video_enabled":                  a.cfg.VideoEnabled,
+		"video_default_profile":          a.cfg.VideoDefaultProfile,
+		"video_default_duration_seconds": a.cfg.VideoDefaultDurationSec,
+		"video_profiles":                 map[string]config.VideoProfile{"standard": a.cfg.VideoStandard, "lightweight": a.cfg.VideoLightweight},
+		"model_provider":                 modelSettings.Provider,
+		"model":                          modelSettings.Model,
+		"model_endpoint":                 modelSettings.Endpoint,
+		"model_configured":               modelSettings.Provider == "openrouter" || modelSettings.Provider == "local",
+		"local_model":                    modelSettings.LocalModel,
+		"local_endpoint":                 modelSettings.LocalEndpoint,
+		"local_configured":               modelSettings.LocalConfigured,
+		"openrouter_model":               modelSettings.OpenRouterModel,
+		"openrouter_configured":          modelSettings.OpenRouterConfigured,
+		"vision_model":                   modelSettings.VisionModel,
+		"vision_endpoint":                modelSettings.VisionEndpoint,
+		"vision_configured":              modelSettings.VisionConfigured,
+		"model_timeout_sec":              a.cfg.ModelTimeout.Seconds(),
+		"timeout_source":                 timeoutSource,
 	})
 }
 

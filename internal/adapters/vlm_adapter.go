@@ -34,7 +34,7 @@ func (a *OpenAIVisionAdapter) Analyze(ctx context.Context, photoID string, image
 				"content": []any{
 					map[string]any{
 						"type": "text",
-						"text": "Analyse this photograph. Return a JSON object with schema_version, photo_id, observed (description, subjects, category, visible_text), hypotheses (type, value, confidence), quality_flags, and safety_flags.",
+						"text": "Analyse this photograph and return the requested JSON. Keep observed.description factual and useful for understanding the image. Write observed.caption separately as a short, natural travel-album caption in casual plain language, usually a brief phrase of 3–12 words. Avoid formulaic openings such as 'This photo shows', generic praise, poetic or overly polished wording, and guesses about people, feelings, places, or events. Use only details clearly visible in the photograph.",
 					},
 					map[string]any{
 						"type": "image_url",
@@ -133,11 +133,12 @@ func visionSchema() map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"description":  map[string]any{"type": "string"},
+					"caption":      map[string]any{"type": "string", "description": "A short, casual, natural-sounding travel photo caption. No boilerplate or unsupported assumptions."},
 					"subjects":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 					"category":     map[string]any{"type": "string"},
 					"visible_text": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				},
-				"required": []string{"description", "subjects", "category"},
+				"required": []string{"description", "caption", "subjects", "category"},
 			},
 			"hypotheses": map[string]any{
 				"type": "array",

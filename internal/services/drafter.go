@@ -92,6 +92,18 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 	if len(selectedPhotoIDs) > 0 {
 		blocks = interleavePhotos(blocks, photos, featurePhotoID, photoPixelDimensions(photos))
 	}
+	videos, err := d.store.Videos.GetByTrip(ctx, tripID)
+	if err != nil {
+		return nil, fmt.Errorf("get videos: %w", err)
+	}
+	for _, video := range videos {
+		if video.Selected {
+			if video.Status != "completed" || video.Path == "" || video.PosterPath == "" {
+				return nil, fmt.Errorf("selected video %s is not ready for the draft (status %s)", video.FileName, video.Status)
+			}
+			blocks = append(blocks, domain.ArticleBlock{ID: "trip_video_" + video.ID, Type: domain.BlockVideo, VideoID: video.ID})
+		}
+	}
 
 	// Create article document
 	doc := &domain.ArticleDocument{
@@ -164,7 +176,7 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 	if len(paragraphIndexes) == 0 {
 		for i, photo := range selected {
 			description := photoDescription(photo)
-			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: photoCaption(photo)})
 		}
 		return storyPhotoLayout(blocks, dimensions)
 	}
@@ -196,14 +208,14 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 		result = append(result, block)
 		for _, photo := range assigned[i] {
 			description := photoDescription(photo)
-			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", imageID), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", imageID), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: photoCaption(photo)})
 			imageID++
 		}
 	}
 	if len(blocks) == 0 {
 		for i, photo := range selected {
 			description := photoDescription(photo)
-			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: photoCaption(photo)})
 		}
 	}
 	return storyPhotoLayout(result, dimensions)
@@ -227,6 +239,17 @@ func photoPixelDimensions(photos []domain.Photo) map[string]image.Point {
 func photoDescription(photo domain.Photo) string {
 	var result domain.VisionResult
 	if photo.VLMResult != "" && json.Unmarshal([]byte(photo.VLMResult), &result) == nil {
+		return strings.TrimSpace(result.Observed.Description)
+	}
+	return ""
+}
+
+func photoCaption(photo domain.Photo) string {
+	var result domain.VisionResult
+	if photo.VLMResult != "" && json.Unmarshal([]byte(photo.VLMResult), &result) == nil {
+		if caption := strings.TrimSpace(result.Observed.Caption); caption != "" {
+			return caption
+		}
 		return strings.TrimSpace(result.Observed.Description)
 	}
 	return ""
@@ -387,7 +410,7 @@ func (d *SectionDrafter) parseBlocks(response string, matches []domain.PhotoMatc
 				continue
 			}
 			description := photoDescription(photo)
-			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", len(placed)+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
+			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", len(placed)+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: photoCaption(photo)})
 			placed[photo.ID] = true
 		}
 		blockID++

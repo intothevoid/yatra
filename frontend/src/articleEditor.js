@@ -7,11 +7,12 @@ function blockToNode(block) {
   return { type: 'paragraph', format: '', indent: 0, version: 1, direction: null, textFormat: 0, textStyle: '', children: [{ type: 'text', text: block.text || '', format: 0, detail: 0, mode: 'normal', style: '', version: 1 }] };
 }
 
-export function initialLexical(article, photos) {
+export function initialLexical(article, photos, videos = []) {
   if (article.lexical) {
     try { return storyLayout(JSON.parse(article.lexical), photos); } catch { /* use generated blocks */ }
   }
   const photoByID = new Map((photos || []).map((photo) => [photo.id, photo]));
+  const videoByID = new Map((videos || []).map((video) => [video.id, video]));
   const children = [];
   for (const block of article.blocks || []) {
     if (block.type === 'heading' || block.type === 'paragraph') children.push(blockToNode(block));
@@ -26,12 +27,16 @@ export function initialLexical(article, photos) {
       const photo = photoByID.get(block.photo_ids[0]);
       if (photo) children.push({ type: 'image', version: 1, src: photo.thumbnail, width: photo.width || 1200, height: photo.height || 800, alt: block.alt_text || '', caption: block.caption || '', title: '', cardWidth: block.card_width || 'full', href: '' });
     }
+    if (block.type === 'video') {
+      const video = videoByID.get(block.video_id);
+      if (video) children.push({ type:'video', version:1, src:video.url, fileName:video.id, mimeType:'video/mp4', width:video.width, height:video.height, duration:video.duration, customThumbnailSrc:video.poster_url, thumbnailSrc:video.poster_url, loop:true, muted:true, autoplay:true, playsinline:true, showControls:false, preload:'none', caption:'' });
+    }
   }
   return storyLayout({ root: { type: 'root', version: 1, format: '', indent: 0, direction: null, children } }, photos);
 }
 
 export function blocksFromLexical(state, oldBlocks) {
-  const preserved = (oldBlocks || []).filter((b) => b.type === 'gallery' || b.type === 'image');
+  const preserved = (oldBlocks || []).filter((b) => b.type === 'gallery' || b.type === 'image' || b.type === 'video');
   const content = [];
   let id = 1;
   for (const node of state?.root?.children || []) {
@@ -43,6 +48,11 @@ export function blocksFromLexical(state, oldBlocks) {
     if (node.type === 'image') {
       const photoID = node.src?.match(/\/photos\/([^/]+)\/thumbnail/)?.[1];
       if (photoID) content.push({ id: `edit_image_${id++}`, type: 'image', photo_ids: [photoID], alt_text: node.alt || '', caption: node.caption || '', card_width: node.cardWidth || 'full' });
+      continue;
+    }
+    if (node.type === 'video') {
+      const videoID = node.src?.match(/\/videos\/(v_[^/]+)\/content/)?.[1] || (node.fileName?.startsWith('v_') ? node.fileName : null);
+      if (videoID) content.push({ id:`edit_video_${id++}`, type:'video', video_id:videoID });
       continue;
     }
     const text = (node.children || []).map((child) => child.text || '').join('');

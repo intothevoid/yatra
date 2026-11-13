@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -84,6 +85,24 @@ type Config struct {
 	MaxFileSize    int64 // default 50MB
 	MaxUploadSize  int64 // default 500MB
 	MaxUploadFiles int   // default 200
+
+	// Local video processing settings.
+	VideoEnabled              bool
+	FFmpegPath                string
+	FFprobePath               string
+	VIPSPath                  string
+	VideoDefaultProfile       string
+	VideoDefaultDurationSec   float64
+	VideoPosterQuality        int
+	VideoProcessingTimeoutSec int
+	VideoMaxSourceSize        int64
+	VideoStandard             VideoProfile
+	VideoLightweight          VideoProfile
+}
+
+type VideoProfile struct {
+	MaxWidth, MaxHeight, FPS, CRF int
+	Preset                        string
 }
 
 func (c *Config) EnsureModelTimeout() {
@@ -96,27 +115,48 @@ func (c *Config) EnsureModelTimeout() {
 // In later milestones, this will also read from a config file.
 func LoadConfig() *Config {
 	cfg := &Config{
-		DataDir:           envOr("DATA_DIR", "./data"),
-		OMLXBaseURL:       envOr("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
-		OMLXVisionModel:   envOr("OMLX_VISION_MODEL", ""),
-		OMLXWriterModel:   envOr("OMLX_WRITER_MODEL", ""),
-		OMLXTimeoutSec:    envIntOr("OMLX_TIMEOUT_SEC", 0),
-		OMLXConcurrency:   envIntOr("OMLX_CONCURRENCY", 1),
-		OMLXAPIKey:        os.Getenv("OMLX_API_KEY"),
-		LocationWebSearch: envBoolOr("LOCATION_WEB_SEARCH", false),
-		BraveSearchAPIKey: os.Getenv("BRAVE_SEARCH_API_KEY"),
-		Port:              envIntOr("PORT", 8080),
-		LogLevel:          envOr("LOG_LEVEL", "info"),
-		ThumbnailSize:     envIntOr("THUMBNAIL_SIZE", 400),
-		PreviewSize:       envIntOr("PREVIEW_SIZE", 1200),
-		ExportSize:        envIntOr("EXPORT_SIZE", 2560),
-		JPEGQuality:       envIntOr("JPEG_QUALITY", 85),
-		GhostURL:          envOr("GHOST_URL", ""),
-		GhostAPIKey:       os.Getenv("GHOST_ADMIN_API_KEY"),
-		MaxFileSize:       int64(envIntOr("MAX_FILE_SIZE_MB", 50)) << 20,
-		MaxUploadSize:     int64(envIntOr("MAX_UPLOAD_SIZE_MB", 500)) << 20,
-		MaxUploadFiles:    envIntOr("MAX_UPLOAD_FILES", 200),
+		DataDir:                   envOr("DATA_DIR", "./data"),
+		OMLXBaseURL:               envOr("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
+		OMLXVisionModel:           envOr("OMLX_VISION_MODEL", ""),
+		OMLXWriterModel:           envOr("OMLX_WRITER_MODEL", ""),
+		OMLXTimeoutSec:            envIntOr("OMLX_TIMEOUT_SEC", 0),
+		OMLXConcurrency:           envIntOr("OMLX_CONCURRENCY", 1),
+		OMLXAPIKey:                os.Getenv("OMLX_API_KEY"),
+		LocationWebSearch:         envBoolOr("LOCATION_WEB_SEARCH", false),
+		BraveSearchAPIKey:         os.Getenv("BRAVE_SEARCH_API_KEY"),
+		Port:                      envIntOr("PORT", 8080),
+		LogLevel:                  envOr("LOG_LEVEL", "info"),
+		ThumbnailSize:             envIntOr("THUMBNAIL_SIZE", 400),
+		PreviewSize:               envIntOr("PREVIEW_SIZE", 1200),
+		ExportSize:                envIntOr("EXPORT_SIZE", 2560),
+		JPEGQuality:               envIntOr("JPEG_QUALITY", 85),
+		GhostURL:                  envOr("GHOST_URL", ""),
+		GhostAPIKey:               os.Getenv("GHOST_ADMIN_API_KEY"),
+		MaxFileSize:               int64(envIntOr("MAX_FILE_SIZE_MB", 50)) << 20,
+		MaxUploadSize:             int64(envIntOr("MAX_UPLOAD_SIZE_MB", 500)) << 20,
+		MaxUploadFiles:            envIntOr("MAX_UPLOAD_FILES", 200),
+		VideoEnabled:              envBoolOr("VIDEO_ENABLED", true),
+		FFmpegPath:                envOr("FFMPEG_PATH", "ffmpeg"),
+		FFprobePath:               envOr("FFPROBE_PATH", "ffprobe"),
+		VIPSPath:                  envOr("VIPS_PATH", "vips"),
+		VideoDefaultProfile:       envOr("VIDEO_DEFAULT_PROFILE", "standard"),
+		VideoDefaultDurationSec:   envFloatOr("VIDEO_DEFAULT_DURATION_SECONDS", 6),
+		VideoPosterQuality:        envIntOr("VIDEO_POSTER_QUALITY", 80),
+		VideoProcessingTimeoutSec: envIntOr("VIDEO_PROCESSING_TIMEOUT_SECONDS", 300),
+		VideoMaxSourceSize:        int64(envIntOr("VIDEO_MAX_SOURCE_SIZE_MB", 500)) << 20,
+		VideoStandard:             VideoProfile{MaxWidth: 1920, MaxHeight: 1080, FPS: 25, CRF: 24, Preset: "slow"},
+		VideoLightweight:          VideoProfile{MaxWidth: 1280, MaxHeight: 720, FPS: 25, CRF: 26, Preset: "slow"},
 	}
+	cfg.VideoStandard.MaxWidth = envIntOr("VIDEO_STANDARD_MAX_WIDTH", cfg.VideoStandard.MaxWidth)
+	cfg.VideoStandard.MaxHeight = envIntOr("VIDEO_STANDARD_MAX_HEIGHT", cfg.VideoStandard.MaxHeight)
+	cfg.VideoStandard.FPS = envIntOr("VIDEO_STANDARD_FPS", cfg.VideoStandard.FPS)
+	cfg.VideoStandard.CRF = envIntOr("VIDEO_STANDARD_CRF", cfg.VideoStandard.CRF)
+	cfg.VideoStandard.Preset = envOr("VIDEO_STANDARD_PRESET", cfg.VideoStandard.Preset)
+	cfg.VideoLightweight.MaxWidth = envIntOr("VIDEO_LIGHTWEIGHT_MAX_WIDTH", cfg.VideoLightweight.MaxWidth)
+	cfg.VideoLightweight.MaxHeight = envIntOr("VIDEO_LIGHTWEIGHT_MAX_HEIGHT", cfg.VideoLightweight.MaxHeight)
+	cfg.VideoLightweight.FPS = envIntOr("VIDEO_LIGHTWEIGHT_FPS", cfg.VideoLightweight.FPS)
+	cfg.VideoLightweight.CRF = envIntOr("VIDEO_LIGHTWEIGHT_CRF", cfg.VideoLightweight.CRF)
+	cfg.VideoLightweight.Preset = envOr("VIDEO_LIGHTWEIGHT_PRESET", cfg.VideoLightweight.Preset)
 	cfg.OMLXWriterBaseURL = cfg.OMLXBaseURL
 	cfg.OMLXVisionBaseURL = cfg.OMLXBaseURL
 	cfg.ModelTimeout = NewModelTimeout(int64(cfg.OMLXTimeoutSec))
@@ -192,6 +232,18 @@ func envIntOr(key string, fallback int) int {
 			return fallback
 		}
 		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+func envFloatOr(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.ParseFloat(v, 64)
+	if err != nil || n < 0 {
+		return fallback
 	}
 	return n
 }

@@ -1,6 +1,6 @@
 # Travel Diary AI
 
-A self-hosted application that turns a directory of travel notes and photos into an illustrated Ghost blog draft, using locally hosted AI models.
+A self-hosted application that turns travel notes, photographs, and locally processed video clips into an illustrated Ghost blog draft, using locally hosted AI models.
 
 ## Quick start
 

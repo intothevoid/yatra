@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "test": "node --test src/storyLayout.test.js scripts/ghost-rendering.test.js",
+    "test": "node --test src/storyLayout.test.js src/articleEditor.test.js scripts/ghost-rendering.test.js",
     "test:ghost": "node --test scripts/ghost-rendering.test.js",
     "test:ghost:browser": "YATRA_GHOST_BROWSER=1 node --test scripts/ghost-rendering.test.js"
   },

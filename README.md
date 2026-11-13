@@ -2,7 +2,7 @@
 
 Yatra turns travel photos and notes into a beautiful travel post. It is integrated with the Ghost blogging platform and can use locally hosted or OpenRouter text models.
 
-The app uses a Go backend, SQLite, a React frontend, Ghost's Koenig editor, and an OpenAI-compatible API for photo descriptions and writing. Photos are supported; video is not currently supported.
+The app uses a Go backend, SQLite, a React frontend, Ghost's Koenig editor, and OpenAI-compatible APIs for photo descriptions and writing. It supports photographs and silent video clips.
 
 <table>
   <tr>
@@ -15,17 +15,32 @@ These featured screenshots use sample settings and contain no real credentials. 
 
 ## Current workflow
 
-1. **Upload photos** from your computer or phone. The default limit is 200 photos per upload and is configurable.
-2. **Review photos** with thumbnails and automatically generated descriptions. Browse all photos or recommendations, select individual images or select all, and choose a header photo with the star button.
-3. **Generate a draft** using your location, notes, and photo descriptions. Photos are placed within story sections, using full-width lead images, pairs, and four-photo groups.
+1. **Upload photos and videos** from your computer or phone. Video trim controls select the source range; new clips default to six seconds. Choose Standard or Lightweight encoding. MOV, MP4, M4V, and other FFmpeg-supported inputs are accepted.
+2. **Review media** with thumbnails, generated photo descriptions, and processed video previews. Select individual images and clips, and choose a header photo with the star button.
+3. **Generate a draft** using your location, notes, and photo descriptions. Video cards can be reordered among text and photographs in the editor.
 4. **Edit in the browser** using Ghost's Koenig editor. Change the title, text, headings, captions, and images; edits save automatically. Resume saved drafts from either device.
 5. **Send draft to Ghost** when ready. Export uploads optimized images and creates or updates a Ghost draft. Review and publish it in Ghost.
 
 The home page's **Pick up where you left off** section lists saved trips. Its trash button deletes a trip and its local assets after confirmation. It does not delete a draft already sent to Ghost.
 
+## Video clips
+
+Yatra preserves an uploaded source copy under `DATA_DIR/assets/<trip>/source-video/`, then stores the processed MP4 and WebP poster under `DATA_DIR/assets/<trip>/videos/`. Source files are never overwritten. The default trim is the first six seconds and can be changed without a fixed duration cap. After import, the review screen can reprocess a clip with another trim range or profile.
+
+| Profile | Maximum dimensions | Frame rate | CRF | Preset |
+|---|---:|---:|---:|---|
+| Standard | 1920 × 1080 | 25 fps | 24 | slow |
+| Lightweight | 1280 × 720 | 25 fps | 26 | slow |
+
+Both profiles encode silent H.264 MP4 with even dimensions and fast-start metadata. Posters are WebP, maximum 1280 pixels wide, with configurable quality. Input formats depend on FFmpeg's demuxers; MOV, MP4, M4V, WebM, MKV, AVI, MPEG, 3GP, and common camera containers are supported when the installed FFmpeg build can decode them. The source video size limit defaults to 500 MB; the processed file must fit `MAX_FILE_SIZE_MB`.
+
+Ghost receives MP4 clips through its media storage integration and posters through the Admin image upload. Yatra uses the storage URLs returned by Ghost in the draft. Ghost video cards accept MP4 and support looping; see [Ghost's video card documentation](https://ghost.org/help/cards/#video). Your Ghost storage adapter must make uploaded media reachable to readers. For viewport-aware playback and reduced-motion support, add [the theme playback script](docs/video-playback.js) to your Ghost theme footer. Without that theme script, the video cards still use Ghost's native muted, looping, inline playback and poster.
+
+Example: upload a 4K camera clip with photos, select a six-second segment, use Standard or Lightweight, preview the processed MP4 and poster, then reorder its video card between two photographs in the editor. Review the article and send it as a Ghost draft. Confirm the Ghost storage URL is reachable; with `docs/video-playback.js` installed in the theme, the video pauses off-screen and respects reduced-motion preferences.
+
 ## Install and run with Docker
 
-Docker Compose is the recommended installation. The image includes the frontend, Go server, `vips`, and `exiftool`; Node and Go do not need to be installed on the host.
+Docker Compose is the recommended installation. The image includes the frontend, Go server, FFmpeg/FFprobe, `vips`, and `exiftool`; Node and Go do not need to be installed on the host.
 
 From a checkout of this repository:
 
@@ -102,12 +117,13 @@ Requirements:
 - Go **1.26.4 or later**, as specified in `go.mod`.
 - Node.js **24.15 or later within Node 24**, and npm. This also satisfies the Ghost rendering test packages.
 - `vips` and `exiftool` available on `PATH`.
+- `ffmpeg`, `ffprobe`, and `vips` with WebP support available on `PATH` for video processing and poster generation.
 - A reachable model endpoint for real photo descriptions and writing.
 
 On macOS with Homebrew:
 
 ```sh
-brew install go node@24 vips exiftool
+brew install go node@24 ffmpeg vips exiftool
 ```
 
 Follow Homebrew's instructions to put Node 24 on `PATH` if needed. On Debian/Ubuntu, the image-processing packages are `libvips-tools` and `libimage-exiftool-perl`; install suitable Go and Node versions separately.
@@ -197,9 +213,17 @@ Without model credentials and a writer model, the server uses fake adapters for 
 | `PREVIEW_SIZE` | `1200` | Preview bounding size in pixels. |
 | `EXPORT_SIZE` | `2560` | Export bounding size in pixels. |
 | `JPEG_QUALITY` | `85` | Quality for generated JPEG derivatives. |
-| `MAX_FILE_SIZE_MB` | `50` | Maximum size of an individual uploaded file. |
+| `MAX_FILE_SIZE_MB` | `50` | Maximum photo upload and processed video output size. |
 | `MAX_UPLOAD_SIZE_MB` | `500` | Maximum size of an upload request. |
-| `MAX_UPLOAD_FILES` | `200` | Maximum number of photos in a browser upload. |
+| `MAX_UPLOAD_FILES` | `200` | Maximum number of files in a browser upload. |
+| `VIDEO_ENABLED` | `true` | Enable local video processing. |
+| `FFMPEG_PATH`, `FFPROBE_PATH`, `VIPS_PATH` | Executable names | Processing, probing, and WebP poster output. |
+| `VIDEO_DEFAULT_PROFILE` | `standard` | Default `standard` or `lightweight` encoding profile. |
+| `VIDEO_DEFAULT_DURATION_SECONDS` | `6` | Default trim duration, overridable per clip. |
+| `VIDEO_PROCESSING_TIMEOUT_SECONDS` | `300` | Per-clip processing timeout. |
+| `VIDEO_MAX_SOURCE_SIZE_MB` | `500` | Maximum original video size. |
+| `VIDEO_POSTER_QUALITY` | `80` | WebP poster quality. |
+| `VIDEO_STANDARD_*` / `VIDEO_LIGHTWEIGHT_*` | Profile table above | Max width, max height, FPS, CRF, and preset overrides. |
 
 Image processing preserves aspect ratio and avoids upscaling. Ghost export uploads the generated export derivative, with the preview used if an export derivative is unavailable. Adjust image settings before importing photos; changing these values does not regenerate existing derivatives.
 
@@ -265,7 +289,7 @@ npm --prefix frontend run test:ghost:browser
 
 The browser check verifies image visibility, heading sizes, gallery alignment, and horizontal overflow. It writes a standalone preview and screenshots to `frontend/test-results/ghost-rendering/`, which is ignored by Git. It uses labeled image placeholders and needs no Ghost credentials, model requests, or photo uploads.
 
-See [the testing guide](docs/testing.md) for using your blog's public CSS and interpreting the test coverage. These checks use pinned Ghost packages; they do not verify your installed Ghost server's upload API or storage. The full Go suite currently has a known configuration-default assertion mismatch (`/data` versus `./data`); the rendering and export checks pass separately.
+See [the testing guide](docs/testing.md) for using your blog's public CSS and interpreting the test coverage. These checks use pinned Ghost packages; they do not verify your installed Ghost server's upload API or storage.
 
 ## Data and network access
 
