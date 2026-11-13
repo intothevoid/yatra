@@ -11,6 +11,7 @@ func TestLoadConfigDefaults(t *testing.T) {
 	os.Unsetenv("DATA_DIR")
 	os.Unsetenv("IMPORT_ROOTS")
 	os.Unsetenv("OMLX_BASE_URL")
+	os.Unsetenv("OMLX_TIMEOUT_SEC")
 	os.Unsetenv("OMLX_API_KEY")
 	os.Unsetenv("GHOST_URL")
 	os.Unsetenv("GHOST_ADMIN_API_KEY")
@@ -25,6 +26,9 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 	if cfg.OMLXBaseURL != "http://127.0.0.1:8000/v1" {
 		t.Errorf("OMLXBaseURL = %q, want %q", cfg.OMLXBaseURL, "http://127.0.0.1:8000/v1")
+	}
+	if cfg.OMLXTimeoutSec != 0 {
+		t.Errorf("OMLXTimeoutSec = %d, want %d", cfg.OMLXTimeoutSec, 0)
 	}
 	if cfg.Port != 8080 {
 		t.Errorf("Port = %d, want %d", cfg.Port, 8080)

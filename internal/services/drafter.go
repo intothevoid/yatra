@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"image"
 	"regexp"
 	"strings"
 	"time"
@@ -79,15 +80,17 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 	prompt := d.buildPrompt(trip, experiences, matches, photos, research.Summary, featurePhotoID)
 
 	// Generate narrative
-	response, err := d.text.Generate(ctx, prompt)
+	reportModelProgress(ctx, "Writing draft", 0)
+	response, err := d.text.Generate(withModelStage(ctx, "Writing draft"), prompt)
 	if err != nil {
 		return nil, fmt.Errorf("generate narrative: %w", err)
 	}
+	reportModelProgress(ctx, "Saving draft", len(response))
 
 	// Parse response into blocks
 	blocks := d.parseBlocks(response, matches, photos, featurePhotoID)
 	if len(selectedPhotoIDs) > 0 {
-		blocks = interleavePhotos(blocks, photos, featurePhotoID)
+		blocks = interleavePhotos(blocks, photos, featurePhotoID, photoPixelDimensions(photos))
 	}
 
 	// Create article document
@@ -130,7 +133,11 @@ func (d *SectionDrafter) Generate(ctx context.Context, tripID string) (*domain.A
 // matches unplaced photos to the most relevant paragraph using visual subjects
 // and category as well as the generated description. The feature image is
 // represented by Ghost's header image and is not repeated in the article body.
-func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featurePhotoID string) []domain.ArticleBlock {
+func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featurePhotoID string, dimensionSets ...map[string]image.Point) []domain.ArticleBlock {
+	dimensions := map[string]image.Point{}
+	if len(dimensionSets) > 0 && dimensionSets[0] != nil {
+		dimensions = dimensionSets[0]
+	}
 	var selected []domain.Photo
 	placed := make(map[string]bool)
 	for _, block := range blocks {
@@ -144,7 +151,7 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 		}
 	}
 	if len(selected) == 0 {
-		return storyPhotoLayout(blocks)
+		return storyPhotoLayout(blocks, dimensions)
 	}
 	result := make([]domain.ArticleBlock, 0, len(blocks)+len(selected))
 
@@ -159,7 +166,7 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 			description := photoDescription(photo)
 			blocks = append(blocks, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
 		}
-		return storyPhotoLayout(blocks)
+		return storyPhotoLayout(blocks, dimensions)
 	}
 	assigned := make(map[int][]domain.Photo)
 	for photoIndex, photo := range selected {
@@ -199,7 +206,22 @@ func interleavePhotos(blocks []domain.ArticleBlock, photos []domain.Photo, featu
 			result = append(result, domain.ArticleBlock{ID: fmt.Sprintf("trip_photo_%d", i+1), Type: domain.BlockImage, PhotoIDs: []string{photo.ID}, AltText: description, Caption: description})
 		}
 	}
-	return storyPhotoLayout(result)
+	return storyPhotoLayout(result, dimensions)
+}
+
+func photoPixelDimensions(photos []domain.Photo) map[string]image.Point {
+	dimensions := make(map[string]image.Point, len(photos))
+	for _, photo := range photos {
+		path := photo.PreviewPath
+		if path == "" {
+			path = photo.ThumbnailPath
+		}
+		width, height, err := adapters.ImageDimensions(path)
+		if err == nil {
+			dimensions[photo.ID] = image.Pt(width, height)
+		}
+	}
+	return dimensions
 }
 
 func photoDescription(photo domain.Photo) string {

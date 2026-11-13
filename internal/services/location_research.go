@@ -41,10 +41,12 @@ func ResearchLocation(ctx context.Context, cfg *config.Config, text adapters.Tex
 	if sourceText != "" {
 		prompt += "\n\nUse only these web search snippets for factual claims. Do not add claims that are absent from the snippets.\n" + sourceText
 	}
-	summary, err := text.Generate(ctx, prompt)
+	reportModelProgress(ctx, "Researching destination", 0)
+	summary, err := text.Generate(withModelStage(ctx, "Researching destination"), prompt)
 	if err != nil {
 		return LocationResearch{}, fmt.Errorf("research location: %w", err)
 	}
+	reportModelProgress(ctx, "Destination research complete", len(summary))
 	return LocationResearch{Summary: strings.TrimSpace(summary), Sources: sources}, nil
 }
 

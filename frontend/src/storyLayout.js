@@ -36,7 +36,18 @@ export function storyLayout(state, photos = []) {
     }
     const cards = [];
     while (images.length) {
-      const count = cards.length === 0 && images.length !== 2 ? 1 : images.length >= 4 ? 4 : Math.min(2, images.length);
+      const first = images[0];
+      const portrait = first.width > 0 && first.height > first.width;
+      if (portrait) {
+        cards.push({ ...images.shift(), cardWidth: 'full' });
+        continue;
+      }
+      let landscapeRun = 0;
+      for (const image of images) {
+        if (image.width > 0 && image.height > image.width) break;
+        landscapeRun++;
+      }
+      const count = cards.length === 0 && images.length !== 2 ? 1 : landscapeRun >= 4 ? 4 : Math.min(2, landscapeRun);
       const group = images.splice(0, count);
       if (count === 1) cards.push({ ...group[0], cardWidth: 'full' });
       else cards.push({ type: 'gallery', version: 1, images: group.map((image, index) => ({ ...image, fileName: image.fileName || image.src?.match(/photos\/([^/]+)/)?.[1] || `photo-${index}.jpg`, width: image.width || 1200, height: image.height || 800, row: Math.floor(index / 3) })), caption: group.map((image) => image.caption).filter(Boolean).join(' · ') });

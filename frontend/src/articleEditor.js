@@ -18,13 +18,13 @@ export function initialLexical(article, photos) {
     if (block.type === 'gallery') {
       const images = (block.photo_ids || []).map((id) => photoByID.get(id)).filter(Boolean).map((photo, index) => ({
         row: index < 2 ? 0 : 1,
-        src: photo.thumbnail, fileName: photo.id, width: 1200, height: 800, alt: photo.description || '', caption: block.photo_captions?.[index] || photo.description || '',
+        src: photo.thumbnail, fileName: photo.id, width: photo.width || 1200, height: photo.height || 800, alt: photo.description || '', caption: block.photo_captions?.[index] || photo.description || '',
       }));
       if (images.length) children.push({ type: 'gallery', version: 1, caption: block.caption || '', images });
     }
     if (block.type === 'image' && block.photo_ids?.[0]) {
       const photo = photoByID.get(block.photo_ids[0]);
-      if (photo) children.push({ type: 'image', version: 1, src: photo.thumbnail, width: 1200, height: 800, alt: block.alt_text || '', caption: block.caption || '', title: '', cardWidth: block.card_width || 'full', href: '' });
+      if (photo) children.push({ type: 'image', version: 1, src: photo.thumbnail, width: photo.width || 1200, height: photo.height || 800, alt: block.alt_text || '', caption: block.caption || '', title: '', cardWidth: block.card_width || 'full', href: '' });
     }
   }
   return storyLayout({ root: { type: 'root', version: 1, format: '', indent: 0, direction: null, children } }, photos);

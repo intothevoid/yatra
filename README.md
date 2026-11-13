@@ -1,6 +1,6 @@
 # Yatra
 
-Yatra turns travel photos and notes into a beautiful travel post. It is integrated with the Ghost blogging platform, and can be used from a desktop or a phone on your local network and a locally hosted LLM.
+Yatra turns travel photos and notes into a beautiful travel post. It is integrated with the Ghost blogging platform and can use locally hosted or OpenRouter text models.
 
 The app uses a Go backend, SQLite, a React frontend, Ghost's Koenig editor, and an OpenAI-compatible API for photo descriptions and writing. Photos are supported; video is not currently supported.
 
@@ -38,7 +38,7 @@ GHOST_ADMIN_API_KEY=your-ghost-admin-api-key
 LOCATION_WEB_SEARCH=false
 ```
 
-Use a vision-capable model for photo descriptions. `OMLX_VISION_MODEL` can be left blank to use the writer model for both tasks, provided it supports images. Supply the API key expected by your model server. Ghost credentials are needed only for sending drafts; local creation and editing can be used without them.
+Use a vision-capable model for photo descriptions. `OMLX_VISION_MODEL` can be left blank to use the writer model for both tasks, provided it supports images. **Model settings** has separate sections for local text, photo analysis, and OpenRouter. Local endpoint and model choices are saved locally; entered API keys are held in server memory only, and blank fields use `OMLX_API_KEY` from `.env` if set. OpenRouter uses its fixed endpoint and its own API key; that key is also memory-only and must be entered again after restart. Ghost credentials are needed only for sending drafts; local creation and editing can be used without them.
 
 Start the app:
 
@@ -46,11 +46,11 @@ Start the app:
 docker compose up --build -d
 ```
 
-Open **http://localhost:8080** on your computer. On a phone connected to the same Wi-Fi, open **http://<computer-LAN-IP>:8080**. Keep the computer running and allow inbound connections on port 8080 in its firewall. `localhost` on the phone refers to the phone itself.
+Open **http://localhost:8080** on your computer. The Docker port is bound to localhost so the settings page and its model credentials are not exposed to the local network.
 
 ### Connect the model server
 
-`OMLX_BASE_URL` must include the API base path, typically `/v1`. Yatra calls the OpenAI-compatible chat completions endpoint below it.
+`OMLX_BASE_URL` must include the API base path, typically `/v1`. It supplies the local OpenAI-compatible service URL at startup. **Model settings** has separate fields for the local text model's endpoint and model ID; those non-secret values are saved locally, while photo analysis continues to use `OMLX_BASE_URL` and `OMLX_VISION_MODEL`. OpenRouter has its own model ID and API key fields and uses its fixed HTTPS endpoint.
 
 - **Docker Desktop / OrbStack, model running on the host:** use `http://host.docker.internal:8000/v1`.
 - **Native Yatra, model running on the same computer:** use `http://127.0.0.1:8000/v1`.
@@ -158,11 +158,11 @@ Open the URL printed by Vite, normally `http://localhost:5173`. Its development 
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` in code | OpenAI-compatible API base URL. The example environment file uses the Docker host address. |
-| `OMLX_API_KEY` | Empty | Model API credential. Set with the writer model to enable real generation. |
+| `OMLX_BASE_URL` | `http://127.0.0.1:8000/v1` in code | Startup URL for local OpenAI-compatible requests. Text and vision models can use separate URLs from Model settings. |
+| `OMLX_API_KEY` | Empty | Startup local model API credential. UI-entered text and vision keys are held in memory only. OpenRouter uses its own memory-only key field. |
 | `OMLX_WRITER_MODEL` | Empty | Model used for writing and destination background. |
 | `OMLX_VISION_MODEL` | Writer model | Optional separate vision-capable model for photo descriptions. |
-| `OMLX_TIMEOUT_SEC` | `180` | Model request timeout in seconds. |
+| `OMLX_TIMEOUT_SEC` | `0` (unset) | Model request timeout in seconds. A UI-saved value overrides this and is stored locally; `0` disables the client-side timeout. |
 | `OMLX_CONCURRENCY` | `1` | Background worker count. |
 | `LOCATION_WEB_SEARCH` | `false` | Enable Brave Search for destination context. |
 | `BRAVE_SEARCH_API_KEY` | Empty | Required when web search is enabled. |
@@ -200,7 +200,7 @@ Enter a post title, location, and notes, then choose **Upload photos and review*
 
 ### Phone workflow
 
-Open Yatra through your computer's LAN address, choose photos using the phone's photo picker, and enter the location and notes. Review the selection, tap the star on the desired header image, and choose **Create my draft**. You can continue editing that saved draft later on a desktop browser.
+Open Yatra at **http://localhost:8080** on the computer running it, choose photos, and enter the location and notes. Review the selection, tap the star on the desired header image, and choose **Create my draft**. You can continue editing that saved draft later in the same local browser.
 
 ### Editing and sending to Ghost
 
@@ -256,7 +256,7 @@ See [the testing guide](docs/testing.md) for using your blog's public CSS and in
 
 Yatra is currently intended for a trusted local network and has no application login. Uploaded photos and drafts are stored under `DATA_DIR`. Photo content goes to the configured vision endpoint, and notes and descriptions go to the writer endpoint. Optional web research sends the destination to Brave Search. Sending a draft uploads its content and images to Ghost.
 
-API keys remain on the server. `.env`, runtime data, dependencies, generated frontend assets, and rendering reports are ignored by Git. SQL migrations under `internal/store/migrations/` are application source and should be committed.
+Environment API keys remain server-side. Keys entered in Model settings stay in process memory, are never returned to the browser or saved in `.env`, the database, or logs, and are cleared when the server restarts. Local endpoint and model choices are saved in the local database; OpenRouter uses its fixed HTTPS endpoint. Text prompts and selected photos are sent to the configured model endpoints. `.env`, runtime data, dependencies, generated frontend assets, and rendering reports are ignored by Git. SQL migrations under `internal/store/migrations/` are application source and should be committed.
 
 ## Troubleshooting
 
@@ -267,7 +267,7 @@ API keys remain on the server. `.env`, runtime data, dependencies, generated fro
 | HEIC import fails | Check that your libvips installation includes HEIF/HEIC decoding support, or try JPEG input. |
 | Upload exceeds a limit | Check all three upload limits; 200 files can exceed the default 500 MB request limit. |
 | Server-side import says `path not allowed` | Use a directory inside `IMPORT_ROOTS` and, with Docker, use its container path. |
-| Phone cannot connect | Check Wi-Fi, the computer's LAN address, firewall access, and the published port. |
+| Need access from another device | The Docker port is bound to localhost to keep model settings local. |
 | Changes are missing from the served UI | Rebuild the frontend and Go binary, or rebuild the Docker image. |
 | Ghost export is unavailable | Set both `GHOST_URL` and `GHOST_ADMIN_API_KEY`, then recreate the container or restart the native server with the updated environment. |
 | An older draft is missing photos | Rendering fixes do not restore photos already absent from the saved draft. Check its selection and content before exporting again. |

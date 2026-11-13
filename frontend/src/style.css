@@ -8,6 +8,9 @@ button { cursor: pointer; }
 .brand { border: 0; display: flex; align-items: center; gap: 10px; background: transparent; color: var(--ink); font-family: Georgia, serif; font-size: 24px; font-weight: 700; letter-spacing: -.8px; }
 .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--green); color: white; font: 600 17px Georgia, serif; }
 .topbar-note { color: var(--muted); font-size: 13px; }
+.topbar-tools { display: flex; align-items: center; gap: 18px; }
+.settings-button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--green); font-size: 12px; font-weight: 600; }
+.settings-button:hover { background: #f0f4ee; }
 .main-content { max-width: 860px; margin: 0 auto; padding: 56px 24px 90px; }
 .welcome { max-width: 640px; margin: 0 auto 36px; text-align: center; }
 .eyebrow { margin: 0 0 10px; color: var(--orange); font-size: 11px; font-weight: 700; letter-spacing: 1.7px; }
@@ -17,6 +20,13 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
 .mobile-break { display: none; }
 .intro { max-width: 530px; margin: 17px auto 0; color: #717d75; font-size: 16px; line-height: 1.65; }
 .create-card, .notes-card { padding: 30px 34px; border: 1px solid var(--line); border-radius: 16px; background: var(--paper); box-shadow: 0 12px 45px rgba(44, 54, 46, .045); }
+.settings-card { max-width: 600px; margin: 0 auto; }
+.settings-card + .settings-card { margin-top: 16px; }
+.settings-welcome { margin-top: 28px; }
+.model-status { color: #9a6a4e; font-size: 12px; font-weight: 700; }
+.model-status.configured { color: var(--green); }
+.settings-help { margin: -5px 0 20px; line-height: 1.6; }
+.reset-model { margin-top: 18px; }
 .section-title { display: flex; align-items: center; justify-content: space-between; margin-bottom: 25px; }
 .step-count { color: #c1c4bc; font-family: 'Playfair Display', serif; font-size: 26px; }
 .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
@@ -57,8 +67,10 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
 .trip-delete-button { display: grid; align-self: center; width: 34px; height: 34px; place-items: center; border: 0; border-radius: 7px; background: transparent; color: #888f87; }
 .trip-delete-button:hover, .trip-delete-button:focus-visible { background: #f8e9e5; color: #9a4839; }
 .trip-delete-button svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
-.message { position: sticky; z-index: 10; top: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-bottom: 22px; padding: 12px 15px; border: 1px solid #d5e3d5; border-radius: 8px; background: #f0f7ee; color: #35523d; font-size: 13px; }
-.message button { border: 0; background: none; color: inherit; font-size: 22px; }
+.message { position: sticky; z-index: 10; top: 12px; display: flex; justify-content: flex-start; align-items: center; gap: 10px; margin-bottom: 22px; padding: 12px 15px; border: 1px solid #d5e3d5; border-radius: 8px; background: #f0f7ee; color: #35523d; font-size: 13px; }
+.message .stop-generation { border: 0; border-radius: 999px; padding: 5px 11px; background: #bd3d32; color: #fff; font-size: 12px; font-weight: 700; line-height: 1.2; white-space: nowrap; }
+.message .stop-generation:hover:not(:disabled) { background: #a92e25; }
+.message .stop-generation:disabled { cursor: wait; opacity: .6; }
 .message-error { border-color: #edc9bd; background: #fff1eb; color: #843d2a; }
 .back-link, .text-button { padding: 0; border: 0; background: transparent; color: var(--green); font-size: 13px; font-weight: 700; }
 .trip-heading { margin: 30px 0 28px; }
@@ -105,12 +117,15 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
 @media (max-width: 640px) {
   .topbar { height: 60px; padding: 0 18px; }
   .topbar-note { max-width: 155px; text-align: right; font-size: 11px; }
+  .topbar-tools { gap: 8px; }
+  .settings-button { padding: 7px 8px; font-size: 11px; }
   .main-content { padding: 36px 16px 72px; }
   .welcome { margin-bottom: 27px; }
   .welcome h1 { font-size: 42px; }
   .mobile-break { display: initial; }
   .intro { font-size: 14px; }
   .create-card { padding: 23px 18px; border-radius: 13px; }
+  .settings-card { padding: 23px 18px; }
   .field-row { grid-template-columns: 1fr; gap: 0; }
   .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .review-tools { align-items: flex-end; flex-direction: column; gap: 8px; }
