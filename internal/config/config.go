@@ -5,8 +5,9 @@ import (
 	"path/filepath"
 )
 
-// Config holds all application configuration.
-// Secrets (API keys) come from environment variables only.
+// Config holds deployment defaults and the active application configuration.
+// The Settings screen may replace model, Ghost, research, image, and upload
+// settings at runtime; persisted credentials are encrypted in DATA_DIR.
 type Config struct {
 	// Data directory for SQLite DB and derived assets.
 	DataDir string
@@ -20,7 +21,7 @@ type Config struct {
 	OMLXWriterModel string
 	OMLXTimeoutSec  int
 	OMLXConcurrency int
-	OMLXAPIKey      string // from env only
+	OMLXAPIKey      string
 
 	// Optional destination research. Disabled by default. When enabled, Brave Search
 	// supplies source snippets to the writer model (the browser never sees the key).
@@ -39,7 +40,7 @@ type Config struct {
 
 	// Ghost Admin API (for Milestone 5).
 	GhostURL    string
-	GhostAPIKey string // from env only
+	GhostAPIKey string
 
 	// Upload limits.
 	MaxFileSize    int64 // default 50MB
@@ -47,8 +48,7 @@ type Config struct {
 	MaxUploadFiles int   // default 200
 }
 
-// LoadConfig reads configuration from environment variables.
-// In later milestones, this will also read from a config file.
+// LoadConfig reads deployment defaults and optional initial settings from the environment.
 func LoadConfig() *Config {
 	cfg := &Config{
 		DataDir:           envOr("DATA_DIR", "./data"),

@@ -4,6 +4,15 @@ Yatra turns travel photos and notes into a beautiful travel post. It is integrat
 
 The app uses a Go backend, SQLite, a React frontend, Ghost's Koenig editor, and an OpenAI-compatible API for photo descriptions and writing. Photos are supported; video is not currently supported.
 
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/yatra-home-phone.png" alt="Yatra home screen shown on a phone" width="100%"><br><sub>Start a story from photos, a location, and notes</sub></td>
+    <td align="center"><img src="docs/images/yatra-settings-phone.png" alt="Yatra settings screen shown on a phone" width="100%"><br><sub>Configure models and Ghost from the phone-friendly settings screen</sub></td>
+  </tr>
+</table>
+
+These featured screenshots use sample settings and contain no real credentials. Regenerate them with the local frontend running on port 5173 and Google Chrome installed by running `node frontend/scripts/capture-readme-screenshots.mjs`.
+
 ## Current workflow
 
 1. **Upload photos** from your computer or phone. The default limit is 200 photos per upload and is configurable.
@@ -152,9 +161,13 @@ Open the URL printed by Vite, normally `http://localhost:5173`. Its development 
 
 ## Configuration
 
-`.env.example` is the configuration template. Keep actual API keys and server settings in your local `.env`.
+After opening Yatra, create an app password and use **Settings** to configure the model provider, Ghost integration, optional destination research, image processing, and upload limits. These settings apply immediately and persist across restarts. API keys are encrypted in `DATA_DIR/app-settings.enc` using a key derived from the app password; the browser only receives whether a key is saved, never its value. Leave a key field blank to keep its current value.
 
-### Models, destination context, and Ghost
+The `.env.example` variables remain available as initial defaults for a new installation and for headless deployments. Once you save Settings, the encrypted settings take precedence. The data directory contains `app-password.json` and `app-settings.enc`; back them up together. The original app password is needed to decrypt saved settings after restart. If you lose it, the encrypted credentials cannot be recovered; remove both files from the data directory to set Yatra up again, then re-enter the settings.
+
+The app password must be at least 12 characters. Sessions expire after 12 hours or when you select **Lock**. Behind a TLS-terminating reverse proxy, forward `X-Forwarded-Proto: https` so the session cookie is marked Secure. Do not expose the app to the internet until the reverse proxy and HTTPS are configured.
+
+### Environment defaults: models, destination context, and Ghost
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -171,9 +184,9 @@ Open the URL printed by Vite, normally `http://localhost:5173`. Its development 
 
 With web search disabled, the configured writer model supplies destination background from its own knowledge. With web search enabled, Brave Search snippets ground the destination research. The editor shows the background used and links to search sources when available. Review generated facts and personal details before publishing.
 
-Without model credentials and a writer model, the server uses fake adapters for development; their output is not a real generated travel story.
+Without model credentials and a writer model, the server uses fake adapters for development; their output is not a real generated travel story. For normal use, enter these values in **Settings** instead of editing `.env`.
 
-### Storage, images, and upload limits
+### Environment defaults: storage, images, and upload limits
 
 | Variable | Default for native runs | Purpose |
 |---|---|---|
@@ -189,6 +202,8 @@ Without model credentials and a writer model, the server uses fake adapters for 
 | `MAX_UPLOAD_FILES` | `200` | Maximum number of photos in a browser upload. |
 
 Image processing preserves aspect ratio and avoids upscaling. Ghost export uploads the generated export derivative, with the preview used if an export derivative is unavailable. Adjust image settings before importing photos; changing these values does not regenerate existing derivatives.
+
+`DATA_DIR`, `PORT`, and `IMPORT_ROOTS` remain deployment settings. Browser photo selection means users do not need filesystem import paths configured for normal use.
 
 ## Using Yatra
 

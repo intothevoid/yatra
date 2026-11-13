@@ -8,6 +8,7 @@ button { cursor: pointer; }
 .brand { border: 0; display: flex; align-items: center; gap: 10px; background: transparent; color: var(--ink); font-family: Georgia, serif; font-size: 24px; font-weight: 700; letter-spacing: -.8px; }
 .brand-mark { width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%; background: var(--green); color: white; font: 600 17px Georgia, serif; }
 .topbar-note { color: var(--muted); font-size: 13px; }
+.topbar-actions { display: flex; align-items: center; gap: 16px; }
 .main-content { max-width: 860px; margin: 0 auto; padding: 56px 24px 90px; }
 .welcome { max-width: 640px; margin: 0 auto 36px; text-align: center; }
 .eyebrow { margin: 0 0 10px; color: var(--orange); font-size: 11px; font-weight: 700; letter-spacing: 1.7px; }
@@ -28,6 +29,10 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
 .upload-head { display: flex; align-items: center; justify-content: space-between; margin: 6px 0 12px; }
 .field-label { font-size: 13px; font-weight: 600; }
 .field-help { margin: 4px 0 0; color: #879088; font-size: 12px; }
+.settings-section { margin-top: 27px; padding-top: 23px; border-top: 1px solid var(--line); }
+.settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.check-field { display: flex; align-items: center; gap: 10px; margin: 8px 0; color: #45534a; font-size: 14px; }
+.check-field input { width: 18px; height: 18px; accent-color: var(--green); }
 .photo-count { color: var(--green); font-size: 12px; font-weight: 700; }
 .file-input { display: none; }
 .pick-button { width: 100%; min-height: 76px; display: flex; justify-content: center; align-items: center; gap: 12px; border: 1px dashed #b9c7ba; border-radius: 10px; background: #f8faf6; color: #415b48; font-size: 14px; font-weight: 600; }
@@ -105,6 +110,9 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
 @media (max-width: 640px) {
   .topbar { height: 60px; padding: 0 18px; }
   .topbar-note { max-width: 155px; text-align: right; font-size: 11px; }
+  .topbar-actions { gap: 10px; }
+  .topbar-actions .text-button { font-size: 11px; }
+  .topbar-note { display: none; }
   .main-content { padding: 36px 16px 72px; }
   .welcome { margin-bottom: 27px; }
   .welcome h1 { font-size: 42px; }
@@ -112,6 +120,7 @@ h2 { margin: 0; font-size: 27px; letter-spacing: -.6px; }
   .intro { font-size: 14px; }
   .create-card { padding: 23px 18px; border-radius: 13px; }
   .field-row { grid-template-columns: 1fr; gap: 0; }
+  .settings-grid { grid-template-columns: 1fr; }
   .photo-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
   .review-tools { align-items: flex-end; flex-direction: column; gap: 8px; }
   .photo-card { border-radius: 7px; }
